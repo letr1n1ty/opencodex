@@ -54,6 +54,7 @@ import {
   projectClaudeRequest,
   type ClaudeThinkingProjection,
 } from "../lib/claude-request-projection";
+import { resolveStallTimeoutSec } from "../stall-timeout";
 import { captureRouteStaticPolicy, NoEligiblePolicyCandidateError, previewRouteModel, routedProviderConfig, UnknownRoutingPolicyError, routeModel, type RouteResult } from "../router";
 import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
@@ -1567,19 +1568,24 @@ async function handleMirasimClaudeCountTokens(
   });
   const outbound = { url, method: "POST", headers, body } as const;
   let upstream: Response | undefined;
+  const connectTimeoutMs = config.connectTimeoutMs ?? 200_000;
+  const bodyInactivityMs = resolveStallTimeoutSec(config.stallTimeoutSec) * 1_000;
   try {
     upstream = await fetchMirasim(outbound, snapshot.accessToken, {
       abortSignal: req.signal,
+      timeoutMs: connectTimeoutMs,
       executor,
     });
     if (upstream.status === 401) {
       try {
         const refreshed = await forceRefreshOAuthAccessSnapshot(snapshot);
-        try { await upstream.body?.cancel(); } catch { /* already closed */ }
-        upstream = await fetchMirasim(outbound, refreshed.accessToken, {
+        const replacement = await fetchMirasim(outbound, refreshed.accessToken, {
           abortSignal: req.signal,
+          timeoutMs: connectTimeoutMs,
           executor,
         });
+        try { await upstream.body?.cancel(); } catch { /* already closed */ }
+        upstream = replacement;
       } catch {
         // Preserve the relay's authenticated rejection below.
       }
@@ -1587,6 +1593,7 @@ async function handleMirasimClaudeCountTokens(
     const observed = await readBoundedResponseBytes(upstream, {
       maxBytes: MIRASIM_COUNT_TOKENS_MAX_BYTES,
       signal: req.signal,
+      inactivityTimeoutMs: bodyInactivityMs,
     });
     if (observed.oversized) {
       return anthropicErrorResponse(502, "Mirasim count_tokens response exceeded the safe size limit", "api_error");
