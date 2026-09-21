@@ -27,6 +27,7 @@ import {
   isProviderQuotaReportCurrent,
   LAST_GOOD_MAX_AGE_MS,
   providerQuotaBeforePublishForTests,
+  report,
   routingEvidence,
   setProviderQuotaReportCache,
   TERMINAL_QUOTA_FAILURE,
@@ -69,6 +70,7 @@ import { antigravityQuotaDiagnosticIdentity, fetchAntigravityQuota, probeAntigra
 import { persistKiroAccountState } from "./kiro-account-state-disk";
 import { kiroProbeCurrent, kiroProbeIdentity } from "./quota/kiro-account-probe";
 import { AnthropicQuotaProbeOwnershipError, anthropicCooldownFlightKey, assertAnthropicQuotaSendAllowed, probeAnthropicQuotaWithRecovery } from "./quota/anthropic-cooldown-recovery";
+import { fetchMirasimQuota } from "../adapters/mirasim/control-plane";
 export type { ProviderQuota, ProviderQuotaCreditsUsd, ProviderQuotaWindow } from "./quota-types";
 export { QUOTA_RESPONSE_MAX_BYTES } from "./quota-wire";
 export {
@@ -360,6 +362,11 @@ async function readExplicitAccountQuota(provider: string, accountId: string, con
     case "kimi": result = await fetchKimiQuota(provider, config, accessToken); break;
     case "command-code": result = await fetchCommandCodeQuota(provider, config, accessToken); break;
     case "devin": result = await (await import("./quota/devin")).fetchDevinQuota(provider, accessToken, credential.apiBaseUrl, config.baseUrl); break;
+    case "mirasim": {
+      const quota = await fetchMirasimQuota(provider, config, accessToken);
+      result = quota ? report(provider, "mirasim:/v1/limits", quota) : null;
+      break;
+    }
     default: return null;
   }
   return { result, identity, isCurrent };
