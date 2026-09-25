@@ -117,6 +117,7 @@ import {
   type ProviderEditorProviderDTO,
 } from "../auth-cors";
 import { providerCatalogCapabilityConfigError } from "./provider-capability-config";
+import { probeMirasimProviderLiveCatalog } from "./mirasim-provider-probe";
 import { providerEmptyToolOutputConfigError } from "../../config/provider-validation";
 import { applySystemEnvToggle } from "../system-env";
 import {
@@ -1714,25 +1715,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       });
     }
     if (prov.adapter === "mirasim") {
-      const started = Date.now();
-      const { fetchMirasimLiveCatalog } = await import("../../adapters/mirasim/control-plane");
-      const live = await fetchMirasimLiveCatalog(name, prov, apiKey ?? "");
-      const latencyMs = Date.now() - started;
-      if (!live.ok) {
-        return jsonResponse({
-          ok: false,
-          latencyMs,
-          error: live.status
-            ? `mirasim discovery returned HTTP ${live.status}`
-            : `mirasim discovery ${live.reason}`,
-        });
-      }
-      return jsonResponse({
-        ok: true,
-        latencyMs,
-        models: live.models.length,
-        message: `Connected. ${live.models.length} models.`,
-      });
+      return probeMirasimProviderLiveCatalog(name, prov, apiKey ?? "");
     }
     const project = prov.project ?? snapshot?.projectId;
     if (antigravity && !project) {
