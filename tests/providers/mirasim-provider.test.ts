@@ -259,6 +259,142 @@ describe("Mirasim provider", () => {
     })).toBe(false);
   });
 
+  test("keeps GPT-6 code-mode exec native on the Mirasim Responses wire", async () => {
+    const mirasim = adapter();
+    const exec = {
+      type: "custom",
+      name: "exec",
+      description: "Run JavaScript",
+      format: { type: "grammar", syntax: "lark" },
+    };
+    const request = await mirasim.buildRequest({
+      modelId: "gpt-6-astra",
+      stream: true,
+      options: { reasoning: "high" },
+      context: {
+        messages: [],
+        tools: [{
+          name: "exec",
+          description: "Run JavaScript",
+          parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+          freeform: true,
+        }],
+      },
+      _rawBody: {
+        model: "gpt-6-astra",
+        input: "run pwd",
+        tools: [{ type: "namespace", name: "functions", tools: [exec] }],
+        tool_choice: "auto",
+      },
+    });
+    const body = JSON.parse(request.body) as { tools?: Array<Record<string, unknown>> };
+
+    expect(body.tools).toEqual([exec]);
+    expect([...(request.convertedRoutedCustomToolNames ?? [])]).not.toContain("exec");
+  });
+
+  test("keeps GPT-6 native exec semantics across continuation history and tool_choice", async () => {
+    const exec = {
+      type: "custom",
+      name: "exec",
+      description: "Run JavaScript",
+      format: { type: "grammar", syntax: "lark" },
+    };
+    const request = await adapter().buildRequest({
+      modelId: "gpt-6-astra",
+      stream: true,
+      options: {},
+      context: {
+        messages: [],
+        tools: [{
+          name: "exec",
+          description: "Run JavaScript",
+          parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+          freeform: true,
+        }],
+      },
+      _rawBody: {
+        model: "gpt-6-astra",
+        input: [
+          {
+            type: "custom_tool_call",
+            id: "ctc_previous_exec",
+            call_id: "call_previous_exec",
+            name: "exec",
+            input: 'text("before")',
+            status: "completed",
+          },
+          {
+            type: "custom_tool_call_output",
+            call_id: "call_previous_exec",
+            output: "ok",
+          },
+          { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+        ],
+        tools: [{ type: "namespace", name: "functions", tools: [exec] }],
+        tool_choice: { type: "custom", namespace: "functions", name: "exec" },
+      },
+    });
+    const body = JSON.parse(request.body) as {
+      input?: Array<Record<string, unknown>>;
+      tools?: Array<Record<string, unknown>>;
+      tool_choice?: Record<string, unknown>;
+    };
+
+    expect(body.tools).toEqual([exec]);
+    expect(body.tool_choice).toEqual({ type: "custom", name: "exec" });
+    expect(body.input?.[0]).toMatchObject({
+      type: "custom_tool_call",
+      id: "ctc_previous_exec",
+      call_id: "call_previous_exec",
+      name: "exec",
+      input: 'text("before")',
+    });
+    expect(body.input?.[1]).toEqual({
+      type: "custom_tool_call_output",
+      call_id: "call_previous_exec",
+      output: "ok",
+    });
+    expect([...(request.convertedRoutedCustomToolNames ?? [])]).not.toContain("exec");
+  });
+
+  test("keeps the shared custom-tool fallback for pre-GPT-6 and non-exec tools", async () => {
+    const build = async (modelId: string, name: string) => {
+      const mirasim = adapter();
+      const request = await mirasim.buildRequest({
+        modelId,
+        stream: true,
+        options: {},
+        context: {
+          messages: [],
+          tools: [{
+            name,
+            description: "custom",
+            parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
+            freeform: true,
+          }],
+        },
+        _rawBody: {
+          model: modelId,
+          input: "hello",
+          tools: [{ type: "custom", name, description: "custom", format: { type: "text" } }],
+        },
+      });
+      return {
+        body: JSON.parse(request.body) as { tools?: Array<Record<string, unknown>> },
+        converted: [...(request.convertedRoutedCustomToolNames ?? [])],
+      };
+    };
+
+    const legacyExec = await build("gpt-5.6-sol", "exec");
+    expect(legacyExec.body.tools?.[0]).toMatchObject({ type: "function", name: "exec" });
+    expect(legacyExec.converted).toContain("exec");
+
+    const otherCustom = await build("gpt-6-astra", "other_custom");
+    expect(otherCustom.body.tools?.[0]).toMatchObject({ type: "function", name: "other_custom" });
+    expect(otherCustom.converted).toContain("other_custom");
+  });
+
   test("parses the signed roster conservatively and excludes paid/foreign families", () => {
     const roster = parseMirasimRoster({
       version: "v2",
