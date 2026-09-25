@@ -18,6 +18,7 @@ import {
 type MirasimWire = "anthropic" | "responses";
 
 const RESPONSE_WIRE_HEADER = "x-opencodex-mirasim-response-wire";
+const MIRASIM_GPT6_NATIVE_CUSTOM_TOOLS = new Set(["exec"]);
 
 function parseMirasimModelSelector(modelId: string): { modelId: string; longContext: boolean } {
   const trimmed = modelId.trim();
@@ -228,15 +229,22 @@ export function createMirasimAdapter(provider: OcxProviderConfig): ProviderAdapt
     authMode: "key",
     apiKey: provider.apiKey,
   });
-  const responses = createResponsesPassthroughAdapter({
+  const responsesProvider = {
     ...provider,
-    adapter: "openai-responses",
-    authMode: "key",
+    adapter: "openai-responses" as const,
+    authMode: "key" as const,
     apiKey: provider.apiKey,
     upstreamWebsocket: false,
+  };
+  const responses = createResponsesPassthroughAdapter(responsesProvider);
+  const gpt6Responses = createResponsesPassthroughAdapter(responsesProvider, {
+    routedCustomToolPassthroughNames: MIRASIM_GPT6_NATIVE_CUSTOM_TOOLS,
   });
 
-  const parser = (wire: MirasimWire): ProviderAdapter => wire === "anthropic" ? anthropic : responses;
+  const parser = (wire: MirasimWire, modelId?: string): ProviderAdapter => {
+    if (wire === "anthropic") return anthropic;
+    return modelId && /^gpt-6(?:-|$)/i.test(modelId) ? gpt6Responses : responses;
+  };
 
   return {
     name: "mirasim",
@@ -249,7 +257,7 @@ export function createMirasimAdapter(provider: OcxProviderConfig): ProviderAdapt
     async buildRequest(parsed, incoming) {
       const selected = parseMirasimModelSelector(parsed.modelId);
       const wire = wireForModel(selected.modelId);
-      const delegate = parser(wire);
+      const delegate = parser(wire, selected.modelId);
       const wireParsed = selected.modelId === parsed.modelId
         ? parsed
         : { ...parsed, modelId: selected.modelId };

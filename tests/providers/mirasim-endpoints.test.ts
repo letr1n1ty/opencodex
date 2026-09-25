@@ -94,6 +94,100 @@ function captureFetch(calls: Captured[], responder: (call: Captured) => Response
 }
 
 describe("Mirasim auxiliary inference endpoints", () => {
+  test("GPT-6 code-mode exec stays native custom from Codex request through relay response", async () => {
+    await saveCredential("mirasim", syntheticCredential());
+    const calls: Captured[] = [];
+    const config = mirasimConfig(captureFetch(calls, call => {
+      if (call.path !== "/v1/responses") return new Response("not found", { status: 404 });
+      const tool = Array.isArray(call.body?.tools)
+        ? call.body.tools[0] as Record<string, unknown> | undefined
+        : undefined;
+      const native = tool?.type === "custom";
+      const item = native
+        ? {
+            id: "ctc_mirasim_exec",
+            type: "custom_tool_call",
+            call_id: "call_mirasim_exec",
+            name: "exec",
+            input: "text(\"ok\")",
+            status: "completed",
+          }
+        : {
+            id: "fc_mirasim_exec",
+            type: "function_call",
+            call_id: "call_mirasim_exec",
+            name: "exec",
+            arguments: JSON.stringify({ input: "text(\"ok\")" }),
+            status: "completed",
+          };
+      const added = {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: native ? { ...item, input: "", status: "in_progress" } : { ...item, arguments: "", status: "in_progress" },
+      };
+      const done = { type: "response.output_item.done", output_index: 0, item };
+      const terminal = {
+        type: "response.completed",
+        response: {
+          id: "resp_mirasim_exec",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: "gpt-6-astra",
+          output: [item],
+          usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+        },
+      };
+      return new Response([
+        `data: ${JSON.stringify(added)}\n\n`,
+        `data: ${JSON.stringify(done)}\n\n`,
+        `data: ${JSON.stringify(terminal)}\n\n`,
+        "data: [DONE]\n\n",
+      ].join(""), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }));
+    const releaseSpendHome = acquireOwnedSpendHome();
+    try {
+      const response = await handleResponses(new Request("http://127.0.0.1/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mirasim/gpt-6-astra",
+          stream: true,
+          input: [{
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Run pwd." }],
+          }],
+          tools: [{
+            type: "namespace",
+            name: "functions",
+            tools: [{
+              type: "custom",
+              name: "exec",
+              description: "Run JavaScript",
+              format: { type: "grammar", syntax: "lark" },
+            }],
+          }],
+          tool_choice: "auto",
+        }),
+      }), config, { model: "", provider: "" }, { abortSignal: AbortSignal.timeout(5_000) });
+
+      expect(response.status).toBe(200);
+      const inference = calls.find(call => call.path === "/v1/responses");
+      const tools = inference?.body?.tools as Array<Record<string, unknown>> | undefined;
+      expect(tools?.[0]).toMatchObject({ type: "custom", name: "exec" });
+      const sse = await response.text();
+      expect(sse).toContain('"type":"custom_tool_call"');
+      expect(sse).toContain('"name":"exec"');
+      expect(sse).not.toContain('"type":"function_call","name":"exec"');
+    } finally {
+      releaseSpendHome();
+    }
+  });
+
   test("non-stream GPT caller receives bounded JSON even though Mirasim forces upstream Responses SSE", async () => {
     await saveCredential("mirasim", syntheticCredential());
     const calls: Captured[] = [];
