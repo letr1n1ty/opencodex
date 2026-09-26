@@ -32,8 +32,8 @@ function parseMirasimModelSelector(modelId: string): { modelId: string; longCont
 function wireForModel(modelId: string): MirasimWire {
   const normalized = parseMirasimModelSelector(modelId).modelId.toLowerCase();
   if (normalized.startsWith("claude-")) return "anthropic";
-  if (normalized.startsWith("gpt-")) return "responses";
-  throw new Error(`Mirasim supports Claude and GPT relay models only (received ${modelId})`);
+  if (normalized.startsWith("gpt-") || normalized === "kimi-k3") return "responses";
+  throw new Error(`Mirasim supports Claude, GPT, and Kimi K3 relay models only (received ${modelId})`);
 }
 
 function requestWire(request: AdapterRequest): MirasimWire {
@@ -213,8 +213,8 @@ function normalizeMirasimWireBody(
 
 /**
  * Mirasim is a transport adapter, not a third protocol translator. Claude requests are serialized
- * by the existing Anthropic adapter; GPT requests are serialized by the existing Responses
- * adapter. This wrapper owns only model->wire selection and Mirasim's signed transport.
+ * by the existing Anthropic adapter; GPT and Kimi K3 requests are serialized by the existing
+ * Responses adapter. This wrapper owns only model->wire selection and Mirasim's signed transport.
  */
 export function createMirasimAdapter(provider: OcxProviderConfig): ProviderAdapter {
   if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {

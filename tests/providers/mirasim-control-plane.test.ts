@@ -229,6 +229,7 @@ describe("Mirasim signed transport", () => {
           data: [
             { id: "gpt-5.6-sol", object: "model", max_input_tokens: 300_000 },
             { id: "claude-sonnet-5", object: "model", max_input_tokens: 900_000 },
+            { id: "kimi-k3", object: "model" },
             { id: "claude-sonnet-5-20270101", object: "model" },
             { id: "gpt-5.6-sol-paid", object: "model" },
             { id: "other/model", object: "model" },
@@ -289,6 +290,10 @@ describe("Mirasim signed transport", () => {
         autoCompactRatio: 0.8,
       },
       {
+        id: "kimi-k3",
+        object: "model",
+      },
+      {
         id: "claude-sonnet-5[1m]",
         object: "model",
         contextWindow: 1_000_000,
@@ -320,7 +325,10 @@ describe("Mirasim signed transport", () => {
       if (path === "/v1/device/session") return ticketResponse();
       if (path === "/v1/models") {
         return new Response(JSON.stringify({
-          data: [{ id: "gpt-5.6-sol", object: "model", max_input_tokens: 300_000 }],
+          data: [
+            { id: "gpt-5.6-sol", object: "model", max_input_tokens: 300_000 },
+            { id: "kimi-k3", object: "model" },
+          ],
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (path === "/v1/model-roster") {
@@ -346,13 +354,14 @@ describe("Mirasim signed transport", () => {
     const provider = {
       ...providerWithFetch(fakeFetch),
       liveModels: true,
-      models: ["gpt-5.6-sol"],
+      models: ["gpt-5.6-sol", "kimi-k3"],
       defaultModel: "gpt-5.6-sol",
-      modelContextWindows: { "gpt-5.6-sol": 372_000 },
-      modelMaxOutputTokens: { "gpt-5.6-sol": 128_000 },
-      modelDisplayNames: { "gpt-5.6-sol": "Static Sol" },
+      modelContextWindows: { "gpt-5.6-sol": 372_000, "kimi-k3": 1_048_576 },
+      modelMaxOutputTokens: { "gpt-5.6-sol": 128_000, "kimi-k3": 128_000 },
+      modelDisplayNames: { "gpt-5.6-sol": "Static Sol", "kimi-k3": "Kimi K3" },
       modelReasoningEfforts: {
         "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "kimi-k3": ["low", "high", "max"],
       },
     } as OcxProviderConfig & { fetch: typeof fetch };
     const captured = {
@@ -387,6 +396,12 @@ describe("Mirasim signed transport", () => {
     expect(model?.reasoningEfforts).toEqual(["low", "max"]);
     expect(model?.autoCompactTokenLimit).toBe(360_000);
     expect(result.outcome.state).toBe("authoritative");
+    const kimi = result.models.find(row => row.id === "kimi-k3");
+    expect(kimi?.displayName).toBe("Kimi K3");
+    expect(kimi?.contextWindow).toBe(400_000);
+    expect(kimi?.contextCapped).toBe(true);
+    expect(kimi?.maxOutputTokens).toBe(128_000);
+    expect(kimi?.reasoningEfforts).toEqual(["low", "high", "max"]);
 
     const cached = await fetchProviderModelsWithAuth(
       captured,
