@@ -50,6 +50,10 @@ function responseWire(response: Response): MirasimWire {
   throw new Error("Mirasim response is missing its internal wire marker");
 }
 
+function isMirasimAnthropicTerminal(event: AdapterEvent): boolean {
+  return event.type === "done" || event.type === "incomplete" || event.type === "error";
+}
+
 function markResponseWire(response: Response, wire: MirasimWire): Response {
   const headers = new Headers(response.headers);
   headers.set(RESPONSE_WIRE_HEADER, wire);
@@ -289,12 +293,25 @@ export function createMirasimAdapter(provider: OcxProviderConfig): ProviderAdapt
       return markResponseWire(response, wire);
     },
 
-    parseStream(
+    async *parseStream(
       response: Response,
       budget: TranslatorBudget,
       tierMetadata?: AdapterTierMetadata,
     ): AsyncGenerator<AdapterEvent> {
-      return parser(responseWire(response)).parseStream(response, budget, tierMetadata);
+      const wire = responseWire(response);
+      const delegate = parser(wire);
+      for await (const event of delegate.parseStream(response, budget, tierMetadata)) {
+        yield event;
+        if (wire === "anthropic" && isMirasimAnthropicTerminal(event)) {
+          // Mirasim's relay may keep the HTTP/SSE transport open after Anthropic's
+          // application-level message_stop. The shared Anthropic parser deliberately supports
+          // providers that need EOF fallback semantics, so normalize only this provider boundary:
+          // once a terminal semantic event is visible, closing this wrapper triggers iterator
+          // cleanup and cancels the still-open relay body instead of making web-search wait for
+          // transport EOF and trip its post-terminal drain guard.
+          return;
+        }
+      }
     },
 
     async parseResponse(
