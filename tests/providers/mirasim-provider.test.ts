@@ -61,6 +61,10 @@ describe("Mirasim provider", () => {
     expect(OAUTH_PROVIDERS.mirasim?.providerConfig.upstreamHttpVersion).toBe("http1.1");
     expect(supportsPerAccountQuota("mirasim")).toBe(true);
     expect(providerOAuthAccountQuotaMode("mirasim")).toBe("probe");
+    expect(entry().models).toContain("kimi-k3");
+    expect(entry().modelDisplayNames?.["kimi-k3"]).toBe("Kimi K3");
+    expect(entry().modelContextWindows?.["kimi-k3"]).toBe(1_048_576);
+    expect(entry().modelReasoningEfforts?.["kimi-k3"]).toEqual(["low", "high", "max"]);
   });
 
   test("routes Claude through Messages and uses adaptive thinking before a roster is observed", async () => {
@@ -257,6 +261,34 @@ describe("Mirasim provider", () => {
       options: {},
       context: { messages: [] },
     })).toBe(false);
+  });
+
+  test("routes Kimi K3 through Responses without rewriting the inference model", async () => {
+    const mirasim = adapter();
+    const parsed = {
+      modelId: "kimi-k3",
+      stream: true,
+      options: { reasoning: "high" },
+      context: { messages: [] },
+      _rawBody: {
+        model: "kimi-k3",
+        input: "hello",
+        reasoning: { effort: "high" },
+      },
+    };
+    expect(mirasim.passthroughFor?.(parsed)).toBe(true);
+    const request = await mirasim.buildRequest(parsed);
+
+    expect(new URL(request.url).pathname).toBe("/v1/responses");
+    const body = JSON.parse(request.body) as {
+      model?: string;
+      reasoning?: { effort?: string };
+      stream?: boolean;
+    };
+    expect(body.model).toBe("kimi-k3");
+    expect(body.reasoning?.effort).toBe("high");
+    expect(body.stream).toBe(true);
+    expect(request.headers["x-opencodex-mirasim-wire"]).toBe("responses");
   });
 
   test("keeps GPT-6 code-mode exec native on the Mirasim Responses wire", async () => {

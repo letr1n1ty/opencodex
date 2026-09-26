@@ -13,6 +13,7 @@ import {
   MIRASIM_MODEL_CONTEXT_WINDOWS,
   MIRASIM_MODEL_DISPLAY_NAMES,
   MIRASIM_MODEL_MAX_OUTPUT_TOKENS,
+  MIRASIM_MODEL_REASONING_EFFORTS,
   MIRASIM_REASONING_EFFORTS,
   MIRASIM_SELECTABLE_MODELS,
 } from "../mirasim-models";
@@ -158,9 +159,7 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     modelMaxOutputTokens: { ...MIRASIM_MODEL_MAX_OUTPUT_TOKENS },
     defaultMaxOutputTokens: 128_000,
     reasoningEfforts: [...MIRASIM_REASONING_EFFORTS],
-    modelReasoningEfforts: Object.fromEntries(
-      MIRASIM_SELECTABLE_MODELS.map(model => [model, [...MIRASIM_REASONING_EFFORTS]]),
-    ),
+    modelReasoningEfforts: { ...MIRASIM_MODEL_REASONING_EFFORTS },
     // The official client maps its workflow-only "ultra" rung to max on the single inference
     // request; the surrounding multi-turn workflow is client orchestration, not a relay effort.
     reasoningEffortMap: { ultra: "max" },

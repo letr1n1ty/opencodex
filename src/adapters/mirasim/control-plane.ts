@@ -244,7 +244,11 @@ function parseRawCatalog(value: unknown): RawCatalogModel[] | undefined {
     const normalized = id.toLowerCase();
     if (seen.has(id) || RESERVED_MODEL_IDS.has(normalized) || id.includes("/") || normalized.endsWith("-paid")) return false;
     if (DATED_MODEL_SUFFIX.test(id) && undated.has(id.replace(DATED_MODEL_SUFFIX, ""))) return false;
-    if (!normalized.startsWith("claude-") && !normalized.startsWith("gpt-")) return false;
+    if (
+      !normalized.startsWith("claude-")
+      && !normalized.startsWith("gpt-")
+      && normalized !== "kimi-k3"
+    ) return false;
     seen.add(id);
     return true;
   });
