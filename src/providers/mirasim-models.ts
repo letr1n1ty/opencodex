@@ -10,6 +10,7 @@ export const MIRASIM_MODELS = [
   "gpt-5.6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
+  "kimi-k3",
 ] as const;
 
 export const MIRASIM_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
@@ -24,6 +25,7 @@ export const MIRASIM_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gpt-5.6-luna": 372_000,
   "gpt-5.6-sol": 372_000,
   "gpt-5.6-terra": 372_000,
+  "kimi-k3": 1_048_576,
 };
 
 export const MIRASIM_MODEL_MAX_OUTPUT_TOKENS: Record<string, number> = {
@@ -38,9 +40,17 @@ export const MIRASIM_MODEL_MAX_OUTPUT_TOKENS: Record<string, number> = {
   "gpt-5.6-luna": 128_000,
   "gpt-5.6-sol": 128_000,
   "gpt-5.6-terra": 128_000,
+  "kimi-k3": 128_000,
 };
 
 export const MIRASIM_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
+
+export const MIRASIM_MODEL_REASONING_EFFORTS: Record<string, string[]> = Object.fromEntries(
+  MIRASIM_MODELS.map(model => [
+    model,
+    model === "kimi-k3" ? ["low", "high", "max"] : [...MIRASIM_REASONING_EFFORTS],
+  ]),
+);
 
 export const MIRASIM_MODEL_DISPLAY_NAMES: Record<string, string> = {
   "claude-fable-5": "Claude Fable 5",
@@ -54,6 +64,7 @@ export const MIRASIM_MODEL_DISPLAY_NAMES: Record<string, string> = {
   "gpt-5.6-luna": "GPT 5.6 Luna",
   "gpt-5.6-sol": "GPT 5.6 Sol",
   "gpt-5.6-terra": "GPT 5.6 Terra",
+  "kimi-k3": "Kimi K3",
 };
 
 const MIRASIM_LONG_CONTEXT_BASE_MODELS = MIRASIM_MODELS.filter(model =>
@@ -70,4 +81,7 @@ for (const model of MIRASIM_LONG_CONTEXT_BASE_MODELS) {
   MIRASIM_MODEL_CONTEXT_WINDOWS[alias] = MIRASIM_MODEL_CONTEXT_WINDOWS[model]!;
   MIRASIM_MODEL_MAX_OUTPUT_TOKENS[alias] = MIRASIM_MODEL_MAX_OUTPUT_TOKENS[model]!;
   MIRASIM_MODEL_DISPLAY_NAMES[alias] = `${MIRASIM_MODEL_DISPLAY_NAMES[model] ?? model} [1m]`;
+  MIRASIM_MODEL_REASONING_EFFORTS[alias] = [
+    ...(MIRASIM_MODEL_REASONING_EFFORTS[model] ?? MIRASIM_REASONING_EFFORTS),
+  ];
 }
