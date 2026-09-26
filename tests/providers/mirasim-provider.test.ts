@@ -18,7 +18,8 @@ import { providerConfigSeed } from "../../src/providers/derive";
 import { providerOAuthAccountQuotaMode, supportsPerAccountQuota } from "../../src/providers/quota";
 import { getProviderRegistryEntry } from "../../src/providers/registry";
 import type { OcxProviderConfig } from "../../src/types";
-import { withTestTranslatorBudget } from "../helpers/translator-budget";
+import { parseStreamWithProgress } from "../../src/web-search/progress-stream";
+import { createTestTranslatorBudget, withTestTranslatorBudget } from "../helpers/translator-budget";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
 
 const previousHome = process.env.OPENCODEX_HOME;
@@ -42,6 +43,44 @@ function adapter() {
     apiKey: "synthetic-mirasim-access",
   } as OcxProviderConfig;
   return withTestTranslatorBudget(createMirasimAdapter(provider));
+}
+
+function hangingMirasimClaudeResponse(stopReason: string) {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+      streamController.enqueue(encoder.encode([
+        "event: message_start\n",
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
+        "event: message_delta\n",
+        `data: ${JSON.stringify({
+          type: "message_delta",
+          delta: { stop_reason: stopReason },
+          usage: { output_tokens: 2 },
+        })}\n\n`,
+        "event: message_stop\n",
+        'data: {"type":"message_stop"}\n\n',
+      ].join("")));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return {
+    response: new Response(body, {
+      headers: {
+        "content-type": "text/event-stream",
+        "x-opencodex-mirasim-response-wire": "anthropic",
+      },
+    }),
+    close() {
+      try { controller.close(); } catch { /* already cancelled or closed */ }
+    },
+    wasCancelled: () => cancelled,
+  };
 }
 
 describe("Mirasim provider", () => {
@@ -223,6 +262,62 @@ describe("Mirasim provider", () => {
     expect(request.headers["anthropic-beta"]).toBe(
       "other-beta,context-1m-2025-08-07",
     );
+  });
+
+  test.each([
+    ["end_turn", "done"],
+    ["refusal", "incomplete"],
+    ["error", "error"],
+  ] as const)("terminates Mirasim Claude parsing after %s message_stop without waiting for relay EOF", async (
+    stopReason,
+    terminalType,
+  ) => {
+    const source = hangingMirasimClaudeResponse(stopReason);
+    const stream = adapter().parseStream(source.response);
+    expect(await stream.next()).toMatchObject({
+      done: false,
+      value: { type: terminalType },
+    });
+
+    const next = stream.next();
+    const outcome = await Promise.race([
+      next.then(value => ({ kind: "done" as const, value })),
+      new Promise<{ kind: "timeout" }>(resolve => {
+        setTimeout(() => resolve({ kind: "timeout" }), 50);
+      }),
+    ]);
+    if (outcome.kind === "timeout") source.close();
+    const final = outcome.kind === "done" ? outcome.value : await next;
+
+    expect(outcome.kind).toBe("done");
+    expect(final.done).toBe(true);
+    expect(source.wasCancelled()).toBe(true);
+  });
+
+  test("completes the web-search post-terminal drain for Mirasim Claude without relay EOF", async () => {
+    const source = hangingMirasimClaudeResponse("end_turn");
+    const mirasim = adapter();
+    const translatorBudget = createTestTranslatorBudget();
+    const events = [];
+
+    for await (const event of parseStreamWithProgress(
+      source.response,
+      mirasim.parseStream.bind(mirasim),
+      {
+        inactivityTimeoutMs: 500,
+        postTerminalDrainTimeoutMs: 20,
+        translatorBudget,
+      },
+    )) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      type: "done",
+      stopReason: "end_turn",
+      usage: { inputTokens: 3, outputTokens: 2 },
+    });
+    expect(source.wasCancelled()).toBe(true);
   });
 
   test("routes GPT through Responses and folds ultra to the relay's max single-turn effort", async () => {
