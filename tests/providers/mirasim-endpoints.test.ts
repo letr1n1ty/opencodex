@@ -10,6 +10,7 @@ import { getProviderRegistryEntry } from "../../src/providers/registry";
 import { handleClaudeCountTokens } from "../../src/server/claude-messages";
 import { handleSearch } from "../../src/server/search";
 import { handleResponses } from "../../src/server/responses/core";
+import { shouldCollectForcedResponsesStream } from "../../src/server/responses/passthrough-delivery";
 import type { RequestLogContext } from "../../src/server/request-log";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
@@ -94,6 +95,14 @@ function captureFetch(calls: Captured[], responder: (call: Captured) => Response
 }
 
 describe("Mirasim auxiliary inference endpoints", () => {
+  test("forced Responses SSE collection is scoped to the Mirasim adapter", () => {
+    const body = { stream: true };
+    expect(shouldCollectForcedResponsesStream("mirasim", false, true, true, body)).toBe(true);
+    expect(shouldCollectForcedResponsesStream("openai-responses", false, true, true, body)).toBe(false);
+    expect(shouldCollectForcedResponsesStream("mirasim", true, true, true, body)).toBe(false);
+    expect(shouldCollectForcedResponsesStream("mirasim", false, false, true, body)).toBe(false);
+    expect(shouldCollectForcedResponsesStream("mirasim", false, true, false, body)).toBe(false);
+  });
   test("GPT-6 code-mode exec stays native custom from Codex request through relay response", async () => {
     await saveCredential("mirasim", syntheticCredential());
     const calls: Captured[] = [];
