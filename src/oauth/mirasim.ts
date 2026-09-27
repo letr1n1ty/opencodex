@@ -898,7 +898,8 @@ async function waitForCallback(
     rejectTokens = reject;
   });
 
-  let consumed = false;
+  let pendingTokens: CallbackTokens | undefined;
+  let completed = false;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -908,14 +909,34 @@ async function waitForCallback(
       const locale = normalizeMirasimBrowserLocale(request.headers.get("accept-language"));
       const copy = MIRASIM_BROWSER_COPY[locale];
       if (url.pathname !== callbackPath) return new Response(copy.notFound, { status: 404 });
-      if (consumed) return new Response(copy.callbackAlreadyUsed, { status: 409 });
-      consumed = true;
-      try {
-        resolveTokens(parseCallbackTokens(url, expectedState));
-        return new Response(
-          `<!doctype html><html lang="${escapeHtml(copy.htmlLang)}"><body style="font-family:system-ui;padding:3rem"><h2>${escapeHtml(copy.completeTitle)}</h2><p>${escapeHtml(copy.completeBody)}</p></body></html>`,
-          { headers: { "Content-Type": "text/html; charset=utf-8", "Connection": "close" } },
+
+      if (url.searchParams.get("result") === "complete") {
+        if (completed) return new Response(copy.callbackAlreadyUsed, { status: 409 });
+        if (!pendingTokens) {
+          return new Response(copy.failedBody, {
+            status: 400,
+            headers: oauthBrowserHeaders("text/plain; charset=utf-8"),
+          });
+        }
+        completed = true;
+        const tokens = pendingTokens;
+        pendingTokens = undefined;
+        resolveTokens(tokens);
+        return browserHtml(
+          locale,
+          copy.completeTitle,
+          `<p>${escapeHtml(copy.completeBody)}</p>`,
         );
+      }
+
+      if (completed || pendingTokens) return new Response(copy.callbackAlreadyUsed, { status: 409 });
+      try {
+        pendingTokens = parseCallbackTokens(url, expectedState);
+        const clean = new URL(callbackPath, url.origin);
+        clean.searchParams.set("result", "complete");
+        const headers = oauthBrowserHeaders();
+        headers.set("Location", clean.toString());
+        return new Response(null, { status: 303, headers });
       } catch (error) {
         const failure = error instanceof Error ? error : new Error("Mirasim OAuth callback failed");
         rejectTokens(failure);
@@ -935,7 +956,8 @@ async function waitForCallback(
   const stop = () => {
     clearTimeout(timeout);
     ctrl.signal?.removeEventListener("abort", abort);
-    server.stop(true);
+    // Let the active callback response flush before closing the ephemeral listener.
+    server.stop(false);
   };
   return {
     callbackUrl: `http://127.0.0.1:${server.port}${callbackPath}`,

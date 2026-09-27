@@ -195,6 +195,37 @@ describe("Mirasim OAuth/email login", () => {
     expect(await response!.text()).toContain("Mirasim 登入連結已過期");
   });
 
+  test("CLI loopback callback redirects away from credential-bearing query before completing", async () => {
+    const calls: AuthCall[] = [];
+    installBrowserAuthServer(calls);
+    let authUrl = "";
+    const login = loginMirasim({
+      onAuth: info => { authUrl = info.url; },
+    });
+    for (let i = 0; i < 100 && !authUrl; i++) await Bun.sleep(1);
+    expect(authUrl).toBeTruthy();
+
+    const upstream = new URL(authUrl);
+    const redirectUri = upstream.searchParams.get("redirect_uri");
+    expect(redirectUri).toBeTruthy();
+    const callback = new URL(redirectUri!);
+    callback.searchParams.set("access_token", "cli-browser-access");
+    callback.searchParams.set("refresh_token", "cli-browser-refresh");
+
+    const first = await originalFetch(callback, { redirect: "manual" });
+    expect(first.status).toBe(303);
+    const clean = first.headers.get("location");
+    expect(clean).toBeTruthy();
+    expect(clean).not.toContain("access_token");
+    expect(clean).not.toContain("refresh_token");
+
+    const completion = await originalFetch(new URL(clean!, callback), { redirect: "manual" });
+    expect(completion.status).toBe(200);
+    const credential = await login;
+    expect(credential.access).toBe("cli-browser-access");
+    expect(credential.refresh).toBe("cli-browser-refresh");
+  });
+
   test("management browser flow starts on a local provider chooser instead of silently preferring GitHub", async () => {
     const calls: AuthCall[] = [];
     installBrowserAuthServer(calls);

@@ -137,6 +137,36 @@ describe("Mirasim signed transport lifecycle", () => {
     expect(inferenceCalls).toBe(8);
   });
 
+  test("device-session expiresAt accepts epoch milliseconds without extending ticket lifetime", async () => {
+    const { access } = await saveMirasimCredential();
+    let sessionCalls = 0;
+    const inferenceBearers: string[] = [];
+    const executor = (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      if (path === "/v1/device/session") {
+        sessionCalls += 1;
+        const payload = sessionCalls === 1
+          ? { ticket: "millisecond-ticket", expiresAt: Date.now() + 1_000 }
+          : { ticket: "replacement-ticket", expiresIn: 600 };
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      inferenceBearers.push(new Headers(init?.headers).get("authorization") ?? "");
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    await fetchMirasim(request, access, { executor });
+    await fetchMirasim(request, access, { executor });
+
+    expect(sessionCalls).toBe(2);
+    expect(inferenceBearers).toEqual([
+      "Bearer millisecond-ticket",
+      "Bearer replacement-ticket",
+    ]);
+  });
+
   test("transient device-session failure backs off instead of mint-storming", async () => {
     const { access } = await saveMirasimCredential();
     let sessionCalls = 0;
