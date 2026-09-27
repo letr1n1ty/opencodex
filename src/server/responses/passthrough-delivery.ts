@@ -153,10 +153,21 @@ import {
 } from "./buffered-sse-json";
 import { decodeServerSentEvents } from "../../lib/sse-decoder";
 
-function outboundRequestForcesResponsesStream(
+export function shouldCollectForcedResponsesStream(
+  adapter: string | undefined,
+  clientRequestedStream: boolean,
+  isEventStream: boolean,
+  upstreamOk: boolean,
   body: Record<string, unknown> | undefined,
 ): boolean {
-  return body?.stream === true;
+  // This compatibility collector exists only for Mirasim's Responses lane, whose relay contract
+  // requires upstream SSE even when the client requested bounded JSON. Do not let a future
+  // provider that independently rewrites `stream:true` inherit this Mirasim-specific 502 path.
+  return adapter === "mirasim"
+    && clientRequestedStream === false
+    && isEventStream
+    && upstreamOk
+    && body?.stream === true;
 }
 
 async function collectForcedResponsesStream(
@@ -560,13 +571,13 @@ export async function deliverPassthroughResponse(
         && !!upstreamResponse.body
         && !passthroughCt
         && (parsed.stream || canonicalBufferedJson));
-    if (
-      route.provider.adapter === "mirasim"
-      && clientRequestedStream === false
-      && isEventStream
-      && upstreamResponse.ok
-      && outboundRequestForcesResponsesStream(nativeExchange.outboundRequestBody)
-    ) {
+    if (shouldCollectForcedResponsesStream(
+      route.provider.adapter,
+      clientRequestedStream,
+      isEventStream,
+      upstreamResponse.ok,
+      nativeExchange.outboundRequestBody,
+    )) {
       try {
         upstreamResponse = await collectForcedResponsesStream(
           upstreamResponse,
