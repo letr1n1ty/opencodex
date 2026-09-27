@@ -235,7 +235,9 @@ function resolveTicketExpiry(now: number, payload: Record<string, unknown>): num
   }
   const expiresAt = payload.expiresAt ?? payload.expires_at;
   if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt > 0) {
-    const candidate = Math.floor(expiresAt * 1000);
+    // Mirasim deployments may return absolute epoch time in either seconds or milliseconds.
+    // Match the limits parser so a millisecond timestamp is not accidentally extended 1000x.
+    const candidate = Math.floor(expiresAt > 1e12 ? expiresAt : expiresAt * 1000);
     if (candidate > now) return candidate;
   }
   return now + TICKET_DEFAULT_TTL_MS;
