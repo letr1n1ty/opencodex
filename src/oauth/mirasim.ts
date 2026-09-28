@@ -11,7 +11,6 @@ const MAX_AUTH_BODY = 64 * 1024;
 const LOGIN_TIMEOUT_MS = 3 * 60 * 1000;
 const AUTH_REQUEST_TIMEOUT_MS = 20_000;
 const PROFILE_REQUEST_TIMEOUT_MS = 5_000;
-const PROVIDER_SLUG = /^[a-z][a-z0-9_-]{0,63}$/;
 const EMAIL_ADDRESS = /^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$/;
 const OAUTH_ERROR_CODE = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
 
@@ -36,7 +35,7 @@ export interface MirasimLoginOptions {
   browserBaseUrl?: string;
   /** Dashboard locale used by the management-owned OAuth pages. */
   browserLocale?: string;
-  /** CLI-only alternative for accounts that are not bound to GitHub/Google OAuth. */
+  /** Optional account email. Browser and default CLI login both use Mirasim email verification. */
   email?: string;
   /** Optional code from a previous /auth/code request. */
   code?: string;
@@ -74,8 +73,8 @@ const MIRASIM_BROWSER_COPY: Record<MirasimBrowserLocale, MirasimBrowserCopy> = {
   en: {
     htmlLang: "en",
     signInTitle: "Sign in to Mirasim",
-    chooseProvider: "Choose the account provider you want to use.",
-    continueWith: provider => `Continue with ${provider}`,
+    chooseProvider: "Enter the email address for your Mirasim account. A short-lived verification code will be sent to that address.",
+    continueWith: () => "Send verification code",
     expiredTitle: "Mirasim sign-in expired",
     expiredBody: "This sign-in link is invalid or has expired. Return to OpenCodex and start again.",
     failedTitle: "Mirasim sign-in failed",
@@ -92,15 +91,15 @@ const MIRASIM_BROWSER_COPY: Record<MirasimBrowserLocale, MirasimBrowserCopy> = {
     methodNotAllowed: "Method Not Allowed",
     callbackAlreadyUsed: "Mirasim login callback already used.",
     notFound: "Not Found",
-    chooseProviderInstruction: "Choose GitHub or Google on the Mirasim sign-in page.",
+    chooseProviderInstruction: "Complete Mirasim sign-in in the browser using the emailed verification code.",
     waitingForBrowser: "Waiting for Mirasim browser authentication...",
     continueInstruction: provider => `Continue with ${provider}.`,
   },
   "zh-TW": {
     htmlLang: "zh-TW",
     signInTitle: "登入 Mirasim",
-    chooseProvider: "選擇要用於登入的帳號供應商。",
-    continueWith: provider => `使用 ${provider} 繼續`,
+    chooseProvider: "輸入 Mirasim 帳號的電子郵件地址。我們會寄送一組短效驗證碼到該地址。",
+    continueWith: () => "傳送驗證碼",
     expiredTitle: "Mirasim 登入連結已過期",
     expiredBody: "此登入連結無效或已過期。請返回 OpenCodex 重新開始。",
     failedTitle: "Mirasim 登入失敗",
@@ -117,15 +116,15 @@ const MIRASIM_BROWSER_COPY: Record<MirasimBrowserLocale, MirasimBrowserCopy> = {
     methodNotAllowed: "不允許此方法",
     callbackAlreadyUsed: "Mirasim 登入回呼已使用。",
     notFound: "找不到頁面",
-    chooseProviderInstruction: "請在 Mirasim 登入頁面選擇 GitHub 或 Google。",
+    chooseProviderInstruction: "請在瀏覽器中使用電子郵件驗證碼完成 Mirasim 登入。",
     waitingForBrowser: "正在等待 Mirasim 瀏覽器驗證…",
     continueInstruction: provider => `使用 ${provider} 繼續。`,
   },
   "zh-CN": {
     htmlLang: "zh-CN",
     signInTitle: "登录 Mirasim",
-    chooseProvider: "选择用于登录的账户提供商。",
-    continueWith: provider => `使用 ${provider} 继续`,
+    chooseProvider: "输入 Mirasim 账户的电子邮件地址。我们会向该地址发送一组短效验证码。",
+    continueWith: () => "发送验证码",
     expiredTitle: "Mirasim 登录链接已过期",
     expiredBody: "此登录链接无效或已过期。请返回 OpenCodex 重新开始。",
     failedTitle: "Mirasim 登录失败",
@@ -142,7 +141,7 @@ const MIRASIM_BROWSER_COPY: Record<MirasimBrowserLocale, MirasimBrowserCopy> = {
     methodNotAllowed: "不允许此方法",
     callbackAlreadyUsed: "Mirasim 登录回调已使用。",
     notFound: "找不到页面",
-    chooseProviderInstruction: "请在 Mirasim 登录页面选择 GitHub 或 Google。",
+    chooseProviderInstruction: "请在浏览器中使用电子邮件验证码完成 Mirasim 登录。",
     waitingForBrowser: "正在等待 Mirasim 浏览器验证…",
     continueInstruction: provider => `使用 ${provider} 继续。`,
   },
@@ -465,83 +464,21 @@ async function loginMirasimWithEmail(
   );
 }
 
-async function discoverLoginProviders(adminUrl: string, signal?: AbortSignal): Promise<string[]> {
-  const response = await fetch(`${adminUrl}/auth/oauth/providers`, {
-    headers: { Accept: "application/json" },
-    redirect: "error",
-    signal: requestSignal(signal),
-  });
-  if (!response.ok) throw new Error(`Mirasim sign-in provider discovery failed with HTTP ${response.status}`);
-  const payload = await boundedJson(response);
-  const rows = Array.isArray(payload.providers) ? payload.providers : [];
-  const providers: string[] = [];
-  const seen = new Set<string>();
-  for (const value of rows) {
-    if (typeof value !== "string") continue;
-    const id = value.trim().toLowerCase();
-    if (!PROVIDER_SLUG.test(id) || seen.has(id)) continue;
-    seen.add(id);
-    providers.push(id);
-  }
-  if (providers.length === 0) throw new Error("Mirasim has no enabled sign-in provider");
-  return providers;
-}
-
-function chooseLoginProvider(providers: string[]): string {
-  const configured = process.env.MIRASIM_OAUTH_PROVIDER?.trim().toLowerCase();
-  if (configured) {
-    if (!PROVIDER_SLUG.test(configured) || !providers.includes(configured)) {
-      throw new Error(`Mirasim sign-in provider "${configured}" is not currently offered`);
-    }
-    return configured;
-  }
-  return providers.includes("github") ? "github" : providers[0]!;
-}
-
 interface CallbackTokens {
   accessToken: string;
   refreshToken: string;
 }
 
-function parseCallbackTokens(url: URL, expectedState: string): CallbackTokens {
-  const returnedState = url.searchParams.get("state")?.trim();
-  // Some Mirasim deployments omit state. The unguessable callback path is then the channel
-  // binding; a present state must still match exactly.
-  if (returnedState && returnedState !== expectedState) throw new Error("Mirasim OAuth state mismatch");
-  const error = url.searchParams.get("error")?.trim();
-  if (error) throw new Error("Mirasim OAuth login was cancelled or rejected");
-  const accessToken = url.searchParams.get("access_token")?.trim() || url.searchParams.get("token")?.trim() || "";
-  const refreshToken = url.searchParams.get("refresh_token")?.trim() || "";
-  return {
-    accessToken: normalizeCredentialSecret("access token", accessToken),
-    refreshToken: normalizeCredentialSecret("refresh token", refreshToken),
-  };
-}
-
-function parseManualCallback(input: string, expectedState: string): CallbackTokens {
-  const trimmed = input.trim();
-  if (!trimmed) throw new Error("Mirasim OAuth callback is empty");
-  try {
-    return parseCallbackTokens(new URL(trimmed), expectedState);
-  } catch (error) {
-    if (!trimmed.includes("=")) throw error;
-    return parseCallbackTokens(new URL(`http://localhost/?${trimmed.replace(/^\?/, "")}`), expectedState);
-  }
-}
-
 const MIRASIM_BROWSER_START_PATH = "/oauth/mirasim/start";
-const MIRASIM_BROWSER_CALLBACK_PREFIX = "/oauth/mirasim/callback/";
-const MIRASIM_BROWSER_COMPLETED_TTL_MS = 30_000;
+const MIRASIM_BROWSER_FORM_MAX_BYTES = 4 * 1024;
 
 interface MirasimBrowserSession {
   state: string;
   locale: MirasimBrowserLocale;
-  callbackToken: string;
-  callbackPath: string;
   adminUrl: string;
   baseUrl: string;
   expiresAt: number;
-  pendingTokens?: CallbackTokens;
+  email?: string;
   completed: boolean;
   promise: Promise<CallbackTokens>;
   resolve: (tokens: CallbackTokens) => void;
@@ -551,7 +488,6 @@ interface MirasimBrowserSession {
 }
 
 const mirasimBrowserSessions = new Map<string, MirasimBrowserSession>();
-const mirasimBrowserCallbackStates = new Map<string, string>();
 
 function validatedBrowserBaseUrl(raw: string): string {
   let parsed: URL;
@@ -579,7 +515,6 @@ function deleteMirasimBrowserSession(state: string): void {
   const session = mirasimBrowserSessions.get(state);
   if (!session) return;
   clearTimeout(session.timeout);
-  mirasimBrowserCallbackStates.delete(session.callbackToken);
   mirasimBrowserSessions.delete(state);
 }
 
@@ -598,8 +533,6 @@ function createMirasimBrowserSession(
     resolveTokens = resolve;
     rejectTokens = reject;
   });
-  const callbackToken = randomBytes(18).toString("base64url");
-  const callbackPath = `${MIRASIM_BROWSER_CALLBACK_PREFIX}${callbackToken}`;
   const timeout = setTimeout(() => {
     const current = mirasimBrowserSessions.get(state);
     if (!current) return;
@@ -610,8 +543,6 @@ function createMirasimBrowserSession(
   const session: MirasimBrowserSession = {
     state,
     locale,
-    callbackToken,
-    callbackPath,
     adminUrl,
     baseUrl,
     expiresAt: Date.now() + LOGIN_TIMEOUT_MS,
@@ -630,7 +561,6 @@ function createMirasimBrowserSession(
   ctrl.signal?.addEventListener("abort", onAbort, { once: true });
   session.abort = () => ctrl.signal?.removeEventListener("abort", onAbort);
   mirasimBrowserSessions.set(state, session);
-  mirasimBrowserCallbackStates.set(callbackToken, state);
 
   const startUrl = new URL(MIRASIM_BROWSER_START_PATH, `${baseUrl}/`);
   startUrl.searchParams.set("state", state);
@@ -655,29 +585,14 @@ function currentMirasimBrowserSession(state: string): MirasimBrowserSession | un
   return undefined;
 }
 
-function callbackTokenFromPath(pathname: string): string | undefined {
-  if (!pathname.startsWith(MIRASIM_BROWSER_CALLBACK_PREFIX)) return undefined;
-  const token = pathname.slice(MIRASIM_BROWSER_CALLBACK_PREFIX.length);
-  if (!/^[A-Za-z0-9_-]{20,}$/.test(token) || token.includes("/")) return undefined;
-  return token;
-}
-
-function currentMirasimBrowserSessionByCallback(pathname: string): MirasimBrowserSession | undefined {
-  const callbackToken = callbackTokenFromPath(pathname);
-  if (!callbackToken) return undefined;
-  const state = mirasimBrowserCallbackStates.get(callbackToken);
-  if (!state) return undefined;
-  const session = currentMirasimBrowserSession(state);
-  return session?.callbackToken === callbackToken ? session : undefined;
-}
-
 function oauthBrowserHeaders(contentType?: string): Headers {
   const headers = new Headers({
     "Cache-Control": "no-store",
     "Pragma": "no-cache",
     "X-Frame-Options": "DENY",
-    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
   });
   if (contentType) headers.set("Content-Type", contentType);
   return headers;
@@ -705,85 +620,110 @@ function browserHtml(
   );
 }
 
-function renderMirasimProviderSelection(
-  state: string,
-  providers: string[],
-  locale: MirasimBrowserLocale,
-): Response {
-  const copy = MIRASIM_BROWSER_COPY[locale];
-  const links = providers.map(provider => {
-    const href = new URL(MIRASIM_BROWSER_START_PATH, "http://localhost");
-    href.searchParams.set("state", state);
-    href.searchParams.set("provider", provider);
-    href.searchParams.set("lang", locale);
-    const label = provider === "github" ? "GitHub" : provider === "google" ? "Google" : provider;
-    return `<li style="margin:.75rem 0"><a href="${escapeHtml(href.pathname + href.search)}" style="display:inline-block;padding:.65rem 1rem;border:1px solid #999;border-radius:.6rem;text-decoration:none;color:inherit">${escapeHtml(copy.continueWith(label))}</a></li>`;
-  }).join("");
+function mirasimBrowserFormAction(session: MirasimBrowserSession): string {
+  const action = new URL(MIRASIM_BROWSER_START_PATH, `${session.baseUrl}/`);
+  action.searchParams.set("state", session.state);
+  action.searchParams.set("lang", session.locale);
+  return action.pathname + action.search;
+}
+
+function renderMirasimEmailEntry(session: MirasimBrowserSession, message?: string, status = 200): Response {
+  const copy = MIRASIM_BROWSER_COPY[session.locale];
+  const notice = message ? `<p role="alert">${escapeHtml(message)}</p>` : "";
   return browserHtml(
-    locale,
+    session.locale,
     copy.signInTitle,
-    `<img src="/provider-icons/mirasim.svg" alt="Mirasim" width="72" height="64" style="display:block;object-fit:contain;margin:0 0 1.25rem;border-radius:.6rem"><p>${escapeHtml(copy.chooseProvider)}</p><ul style="list-style:none;padding:0">${links}</ul>`,
+    `<img src="/provider-icons/mirasim.svg" alt="Mirasim" width="72" height="64" style="display:block;object-fit:contain;margin:0 0 1.25rem;border-radius:.6rem"><p>${escapeHtml(copy.chooseProvider)}</p>${notice}<form method="post" action="${escapeHtml(mirasimBrowserFormAction(session))}"><input type="hidden" name="action" value="send"><label style="display:block;margin:.75rem 0 .4rem">Email</label><input name="email" type="email" autocomplete="email" required maxlength="320" style="box-sizing:border-box;width:100%;padding:.65rem .75rem;border:1px solid #999;border-radius:.55rem"><button type="submit" style="margin-top:1rem;padding:.65rem 1rem">${escapeHtml(copy.continueWith("email"))}</button></form>`,
+    status,
+  );
+}
+
+function renderMirasimCodeEntry(session: MirasimBrowserSession, message?: string, status = 200): Response {
+  const copy = MIRASIM_BROWSER_COPY[session.locale];
+  const notice = message ? `<p role="alert">${escapeHtml(message)}</p>` : "";
+  const instruction = session.locale === "zh-TW"
+    ? "驗證碼已寄出。請輸入郵件中的驗證碼。"
+    : session.locale === "zh-CN"
+      ? "验证码已发送。请输入邮件中的验证码。"
+      : "The verification code was sent. Enter the code from your email.";
+  const label = session.locale === "zh-TW" ? "驗證碼" : session.locale === "zh-CN" ? "验证码" : "Verification code";
+  const submit = session.locale === "zh-TW" ? "完成登入" : session.locale === "zh-CN" ? "完成登录" : "Complete sign-in";
+  return browserHtml(
+    session.locale,
+    copy.signInTitle,
+    `<p>${escapeHtml(instruction)}</p>${notice}<form method="post" action="${escapeHtml(mirasimBrowserFormAction(session))}"><input type="hidden" name="action" value="verify"><label style="display:block;margin:.75rem 0 .4rem">${escapeHtml(label)}</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required maxlength="32" style="box-sizing:border-box;width:100%;padding:.65rem .75rem;border:1px solid #999;border-radius:.55rem"><button type="submit" style="margin-top:1rem;padding:.65rem 1rem">${escapeHtml(submit)}</button></form>`,
+    status,
   );
 }
 
 function settleMirasimBrowserSession(session: MirasimBrowserSession, tokens: CallbackTokens): void {
   if (session.completed) return;
   session.completed = true;
-  session.pendingTokens = undefined;
   clearTimeout(session.timeout);
   session.abort?.();
   session.abort = undefined;
   session.resolve(tokens);
-  const cleanup = setTimeout(() => {
-    if (mirasimBrowserSessions.get(session.state) === session) {
-      mirasimBrowserCallbackStates.delete(session.callbackToken);
-      mirasimBrowserSessions.delete(session.state);
-    }
-  }, MIRASIM_BROWSER_COMPLETED_TTL_MS);
-  cleanup.unref?.();
+  mirasimBrowserSessions.delete(session.state);
 }
 
 function rejectMirasimBrowserSession(session: MirasimBrowserSession, error: Error): void {
   if (mirasimBrowserSessions.get(session.state) !== session) return;
-  mirasimBrowserCallbackStates.delete(session.callbackToken);
   mirasimBrowserSessions.delete(session.state);
   clearTimeout(session.timeout);
   session.abort?.();
   session.abort = undefined;
-  session.pendingTokens = undefined;
   session.reject(error);
 }
 
+async function readBoundedBrowserForm(req: Request): Promise<URLSearchParams> {
+  const contentType = req.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/x-www-form-urlencoded") {
+    throw new Error("Mirasim browser form used an unsupported content type");
+  }
+  const reader = req.body?.getReader();
+  if (!reader) return new URLSearchParams();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MIRASIM_BROWSER_FORM_MAX_BYTES) {
+        try { await reader.cancel(); } catch { /* already closed */ }
+        throw new Error("Mirasim browser form exceeded the accepted size");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new URLSearchParams(new TextDecoder().decode(bytes));
+}
+
 /**
- * Public browser resources for the management-owned Mirasim OAuth flow.
+ * Public browser resource for the management-owned Mirasim login flow.
  *
- * These routes deliberately sit outside /api management auth. The 256-bit pending state is the
- * capability, matching the upstream CPA design: the start route only chooses an offered provider,
- * while the callback accepts bounded renewable credentials only for that one live state.
+ * Renewable credentials never cross the browser URL. The browser POSTs only an email address and
+ * a short-lived verification code to this management origin; OpenCodex exchanges those values
+ * server-to-server with Mirasim and stores the returned access/refresh material directly.
  */
 export async function handleMirasimBrowserOAuthRequest(
   req: Request,
   url = new URL(req.url),
 ): Promise<Response | null> {
-  const isStart = url.pathname === MIRASIM_BROWSER_START_PATH;
-  const isCallbackNamespace = url.pathname.startsWith(MIRASIM_BROWSER_CALLBACK_PREFIX);
-  if (!isStart && !isCallbackNamespace) {
-    return null;
-  }
+  if (url.pathname !== MIRASIM_BROWSER_START_PATH) return null;
   const requestLocale = normalizeMirasimBrowserLocale(
     url.searchParams.get("lang") ?? req.headers.get("accept-language"),
   );
-  if (req.method !== "GET") {
-    return new Response(MIRASIM_BROWSER_COPY[requestLocale].methodNotAllowed, {
-      status: 405,
-      headers: oauthBrowserHeaders("text/plain; charset=utf-8"),
-    });
-  }
-
   const returnedState = url.searchParams.get("state")?.trim() ?? "";
-  const session = isStart
-    ? (returnedState ? currentMirasimBrowserSession(returnedState) : undefined)
-    : currentMirasimBrowserSessionByCallback(url.pathname);
+  const session = returnedState ? currentMirasimBrowserSession(returnedState) : undefined;
   if (!session) {
     const copy = MIRASIM_BROWSER_COPY[requestLocale];
     return browserHtml(
@@ -795,175 +735,88 @@ export async function handleMirasimBrowserOAuthRequest(
   }
   const locale = session.locale;
   const copy = MIRASIM_BROWSER_COPY[locale];
-  const state = session.state;
-  if (returnedState && returnedState !== state) {
-    rejectMirasimBrowserSession(session, new Error("Mirasim OAuth state mismatch"));
-    return browserHtml(
-      locale,
-      copy.failedTitle,
-      `<p>${escapeHtml(copy.mismatchBody)}</p>`,
-      400,
-    );
+
+  if (req.method === "GET") {
+    return session.email ? renderMirasimCodeEntry(session) : renderMirasimEmailEntry(session);
+  }
+  if (req.method !== "POST") {
+    return new Response(copy.methodNotAllowed, {
+      status: 405,
+      headers: oauthBrowserHeaders("text/plain; charset=utf-8"),
+    });
   }
 
-  if (isStart) {
-    let providers: string[];
-    try {
-      providers = await discoverLoginProviders(session.adminUrl, req.signal);
-    } catch {
-      return browserHtml(
-        locale,
-        copy.unavailableTitle,
-        `<p>${escapeHtml(copy.unavailableBody)}</p>`,
-        503,
-      );
-    }
-    const provider = url.searchParams.get("provider")?.trim().toLowerCase() ?? "";
-    if (!provider) return renderMirasimProviderSelection(state, providers, locale);
-    if (!PROVIDER_SLUG.test(provider) || !providers.includes(provider)) {
-      return browserHtml(
-        locale,
-        copy.unsupportedTitle,
-        `<p>${escapeHtml(copy.unsupportedBody)}</p>`,
-        400,
-      );
-    }
-
-    const callbackUrl = new URL(session.callbackPath, `${session.baseUrl}/`);
-    const authUrl = new URL(`${session.adminUrl}/auth/oauth/${encodeURIComponent(provider)}/login`);
-    authUrl.searchParams.set("redirect_uri", callbackUrl.toString());
-    authUrl.searchParams.set("state", state);
-    const headers = oauthBrowserHeaders();
-    headers.set("Location", authUrl.toString());
-    return new Response(null, { status: 302, headers });
-  }
-
-  if (url.searchParams.get("result") === "complete") {
-    if (session.completed) {
-      return browserHtml(
-        locale,
-        copy.completeTitle,
-        `<p>${escapeHtml(copy.completeBody)}</p>`,
-      );
-    }
-    const tokens = session.pendingTokens;
-    if (!tokens) {
-      return browserHtml(
-        locale,
-        copy.incompleteTitle,
-        `<p>${escapeHtml(copy.incompleteBody)}</p>`,
-        400,
-      );
-    }
-    settleMirasimBrowserSession(session, tokens);
-    return browserHtml(
-      locale,
-      copy.completeTitle,
-      `<p>${escapeHtml(copy.completeBody)}</p>`,
-    );
-  }
-
+  let form: URLSearchParams;
   try {
-    const tokens = parseCallbackTokens(url, state);
-    session.pendingTokens = tokens;
-    const clean = new URL(session.callbackPath, `${session.baseUrl}/`);
-    clean.searchParams.set("state", state);
-    clean.searchParams.set("result", "complete");
-    const headers = oauthBrowserHeaders();
-    headers.set("Location", clean.toString());
-    return new Response(null, { status: 303, headers });
-  } catch (error) {
-    rejectMirasimBrowserSession(
-      session,
-      error instanceof Error ? error : new Error("Mirasim OAuth callback failed"),
-    );
-    return browserHtml(
-      locale,
-      copy.failedTitle,
-      `<p>${escapeHtml(copy.failedBody)}</p>`,
-      400,
-    );
+    form = await readBoundedBrowserForm(req);
+  } catch {
+    return renderMirasimEmailEntry(session, copy.failedBody, 400);
   }
-}
+  const action = form.get("action")?.trim();
+  if (action === "send") {
+    let email: string;
+    try {
+      email = normalizeLoginEmail(form.get("email") ?? "");
+    } catch {
+      return renderMirasimEmailEntry(session, copy.failedBody, 400);
+    }
+    if (session.email && session.email !== email) {
+      return renderMirasimCodeEntry(session, copy.failedBody, 409);
+    }
+    try {
+      const response = await postMirasimAuthJson(session.adminUrl, "/auth/code", { email }, req.signal);
+      try { await response.body?.cancel(); } catch { /* already closed */ }
+      session.email = email;
+      return renderMirasimCodeEntry(session);
+    } catch {
+      return renderMirasimEmailEntry(session, copy.unavailableBody, 502);
+    }
+  }
 
-async function waitForCallback(
-  ctrl: OAuthController,
-  expectedState: string,
-  callbackPath: string,
-): Promise<{ callbackUrl: string; tokens: Promise<CallbackTokens>; stop: () => void }> {
-  let resolveTokens!: (tokens: CallbackTokens) => void;
-  let rejectTokens!: (error: Error) => void;
-  const tokens = new Promise<CallbackTokens>((resolve, reject) => {
-    resolveTokens = resolve;
-    rejectTokens = reject;
-  });
-
-  let pendingTokens: CallbackTokens | undefined;
-  let completed = false;
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    reusePort: false,
-    fetch(request) {
-      const url = new URL(request.url);
-      const locale = normalizeMirasimBrowserLocale(request.headers.get("accept-language"));
-      const copy = MIRASIM_BROWSER_COPY[locale];
-      if (url.pathname !== callbackPath) return new Response(copy.notFound, { status: 404 });
-
-      if (url.searchParams.get("result") === "complete") {
-        if (completed) return new Response(copy.callbackAlreadyUsed, { status: 409 });
-        if (!pendingTokens) {
-          return new Response(copy.failedBody, {
-            status: 400,
-            headers: oauthBrowserHeaders("text/plain; charset=utf-8"),
-          });
-        }
-        completed = true;
-        const tokens = pendingTokens;
-        pendingTokens = undefined;
-        resolveTokens(tokens);
-        return browserHtml(
-          locale,
-          copy.completeTitle,
-          `<p>${escapeHtml(copy.completeBody)}</p>`,
-        );
+  if (action === "verify") {
+    const email = session.email;
+    if (!email) return renderMirasimEmailEntry(session, copy.incompleteBody, 400);
+    let code: string;
+    try {
+      code = normalizeLoginCode(form.get("code") ?? "");
+    } catch {
+      return renderMirasimCodeEntry(session, copy.failedBody, 400);
+    }
+    try {
+      const response = await postMirasimAuthJson(
+        session.adminUrl,
+        "/auth/verify",
+        { email, code },
+        req.signal,
+      );
+      code = "";
+      const payload = await boundedJson(response);
+      let accessToken = typeof payload.access_token === "string" ? payload.access_token : "";
+      let refreshToken = typeof payload.refresh_token === "string" ? payload.refresh_token : "";
+      if (!accessToken.trim() || !refreshToken.trim()) {
+        accessToken = "";
+        refreshToken = "";
+        throw new Error("Mirasim browser sign-in returned no renewable credential");
       }
-
-      if (completed || pendingTokens) return new Response(copy.callbackAlreadyUsed, { status: 409 });
-      try {
-        pendingTokens = parseCallbackTokens(url, expectedState);
-        const clean = new URL(callbackPath, url.origin);
-        clean.searchParams.set("result", "complete");
-        const headers = oauthBrowserHeaders();
-        headers.set("Location", clean.toString());
-        return new Response(null, { status: 303, headers });
-      } catch (error) {
-        const failure = error instanceof Error ? error : new Error("Mirasim OAuth callback failed");
-        rejectTokens(failure);
-        return new Response(copy.failedBody, {
-          status: 400,
-          headers: { "Content-Type": "text/plain; charset=utf-8", "Connection": "close" },
-        });
+      const tokens = {
+        accessToken: normalizeCredentialSecret("access token", accessToken),
+        refreshToken: normalizeCredentialSecret("refresh token", refreshToken),
+      };
+      accessToken = "";
+      refreshToken = "";
+      settleMirasimBrowserSession(session, tokens);
+      return browserHtml(locale, copy.completeTitle, `<p>${escapeHtml(copy.completeBody)}</p>`);
+    } catch (error) {
+      code = "";
+      if (error instanceof Error && error.message.includes("no renewable credential")) {
+        rejectMirasimBrowserSession(session, error);
+        return browserHtml(locale, copy.failedTitle, `<p>${escapeHtml(copy.failedBody)}</p>`, 502);
       }
-    },
-  });
+      return renderMirasimCodeEntry(session, copy.failedBody, 400);
+    }
+  }
 
-  const timeout = setTimeout(() => rejectTokens(new Error("Mirasim OAuth login timed out")), LOGIN_TIMEOUT_MS);
-  timeout.unref?.();
-  const abort = () => rejectTokens(new Error("Mirasim OAuth login cancelled"));
-  ctrl.signal?.addEventListener("abort", abort, { once: true });
-
-  const stop = () => {
-    clearTimeout(timeout);
-    ctrl.signal?.removeEventListener("abort", abort);
-    // Let the active callback response flush before closing the ephemeral listener.
-    server.stop(false);
-  };
-  return {
-    callbackUrl: `http://127.0.0.1:${server.port}${callbackPath}`,
-    tokens: tokens.finally(stop),
-    stop,
-  };
+  return renderMirasimEmailEntry(session, copy.failedBody, 400);
 }
 
 export async function loginMirasim(
@@ -995,54 +848,18 @@ export async function loginMirasim(
     });
     ctrl.onProgress?.(browserCopy.waitingForBrowser);
 
-    const browserResult = pending.tokens.then(tokens => ({ source: "browser" as const, tokens }));
-    const result = ctrl.onManualCodeInput
-      ? await Promise.race([
-          browserResult,
-          ctrl.onManualCodeInput(state).then(input => ({
-            source: "manual" as const,
-            tokens: parseManualCallback(input, state),
-          })),
-        ])
-      : await browserResult;
-    if (result.source === "manual") pending.discard();
-    return enrichMirasimCredentialFromProfile(
-      credentialsFromTokens(result.tokens.accessToken, result.tokens.refreshToken, mirasim),
-      ctrl.signal,
-    );
-  }
-
-  const providers = await discoverLoginProviders(mirasim.adminUrl, ctrl.signal);
-  const provider = chooseLoginProvider(providers);
-  const callbackPath = `/mirasim/oauth/${randomBytes(24).toString("base64url")}`;
-  const pending = await waitForCallback(ctrl, state, callbackPath);
-
-  const authUrl = new URL(`${mirasim.adminUrl}/auth/oauth/${encodeURIComponent(provider)}/login`);
-  authUrl.searchParams.set("redirect_uri", pending.callbackUrl);
-  authUrl.searchParams.set("state", state);
-  ctrl.onAuth?.({
-    url: authUrl.toString(),
-    instructions: browserCopy.continueInstruction(
-      provider === "github" ? "GitHub" : provider === "google" ? "Google" : provider,
-    ),
-  });
-  ctrl.onProgress?.(browserCopy.waitingForBrowser);
-
-  try {
-    const callbackPromise = pending.tokens;
-    const tokens = ctrl.onManualCodeInput
-      ? await Promise.race([
-          callbackPromise,
-          ctrl.onManualCodeInput(state).then(input => parseManualCallback(input, state)),
-        ])
-      : await callbackPromise;
+    const tokens = await pending.tokens;
     return enrichMirasimCredentialFromProfile(
       credentialsFromTokens(tokens.accessToken, tokens.refreshToken, mirasim),
       ctrl.signal,
     );
-  } finally {
-    pending.stop();
   }
+
+  if (!ctrl.onManualCodeInput) {
+    throw new Error("Mirasim sign-in requires an interactive account email");
+  }
+  const email = await ctrl.onManualCodeInput(undefined, "Enter the Mirasim account email: ");
+  return loginMirasimWithEmail(ctrl, mirasim, { email });
 }
 
 export async function refreshMirasimToken(
