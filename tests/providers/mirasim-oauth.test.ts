@@ -238,6 +238,14 @@ describe("Mirasim OAuth/email login", () => {
     expect(send?.status).toBe(200);
     expect(await send!.text()).toContain("Verification code");
 
+    const duplicateSend = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=send&email=browser%40example.com",
+    }));
+    expect(duplicateSend?.status).toBe(409);
+    expect(calls.filter(call => call.path === "/auth/code")).toHaveLength(1);
+
     const verify = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -361,6 +369,47 @@ describe("Mirasim OAuth/email login", () => {
     await Promise.resolve();
     abort.abort();
     await expect(login).rejects.toThrow("cancelled");
+
+    const expired = await handleMirasimBrowserOAuthRequest(new Request(authUrl));
+    expect(expired?.status).toBe(400);
+    expect(await expired!.text()).toContain("invalid or has expired");
+  });
+
+  test("management browser verification caps failed code attempts and expires the session", async () => {
+    const calls: AuthCall[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      calls.push({ path });
+      if (path === "/auth/code") return new Response(null, { status: 200 });
+      if (path === "/auth/verify") return new Response(null, { status: 400 });
+      throw new Error(`unexpected Mirasim auth path: ${path}`);
+    }) as typeof fetch;
+
+    let authUrl = "";
+    const login = loginMirasim({
+      onAuth: info => { authUrl = info.url; },
+    }, {
+      browserBaseUrl: "http://127.0.0.1:10100",
+    });
+    await Promise.resolve();
+
+    const send = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=send&email=user%40example.com",
+    }));
+    expect(send?.status).toBe(200);
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const denied = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `action=verify&code=${100000 + attempt}`,
+      }));
+      expect(denied?.status).toBe(400);
+    }
+    expect(calls.filter(call => call.path === "/auth/verify")).toHaveLength(5);
+    await expect(login).rejects.toThrow("verification attempts exhausted");
 
     const expired = await handleMirasimBrowserOAuthRequest(new Request(authUrl));
     expect(expired?.status).toBe(400);

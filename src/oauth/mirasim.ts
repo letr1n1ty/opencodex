@@ -471,6 +471,7 @@ interface CallbackTokens {
 
 const MIRASIM_BROWSER_START_PATH = "/oauth/mirasim/start";
 const MIRASIM_BROWSER_FORM_MAX_BYTES = 4 * 1024;
+const MIRASIM_BROWSER_MAX_VERIFY_ATTEMPTS = 5;
 
 interface MirasimBrowserSession {
   state: string;
@@ -479,6 +480,8 @@ interface MirasimBrowserSession {
   baseUrl: string;
   expiresAt: number;
   email?: string;
+  codeSent: boolean;
+  verifyAttempts: number;
   completed: boolean;
   promise: Promise<CallbackTokens>;
   resolve: (tokens: CallbackTokens) => void;
@@ -546,6 +549,8 @@ function createMirasimBrowserSession(
     adminUrl,
     baseUrl,
     expiresAt: Date.now() + LOGIN_TIMEOUT_MS,
+    codeSent: false,
+    verifyAttempts: 0,
     completed: false,
     promise,
     resolve: resolveTokens,
@@ -760,16 +765,20 @@ export async function handleMirasimBrowserOAuthRequest(
     } catch {
       return renderMirasimEmailEntry(session, copy.failedBody, 400);
     }
-    if (session.email && session.email !== email) {
-      return renderMirasimCodeEntry(session, copy.failedBody, 409);
+    if (session.codeSent) {
+      return renderMirasimCodeEntry(session, copy.callbackAlreadyUsed, 409);
     }
+    // Spend the one send before the network call so concurrent POSTs cannot turn a leaked
+    // login capability into a mail relay. A failed send requires starting a fresh login.
+    session.codeSent = true;
+    session.email = email;
     try {
       const response = await postMirasimAuthJson(session.adminUrl, "/auth/code", { email }, req.signal);
       try { await response.body?.cancel(); } catch { /* already closed */ }
-      session.email = email;
       return renderMirasimCodeEntry(session);
     } catch {
-      return renderMirasimEmailEntry(session, copy.unavailableBody, 502);
+      rejectMirasimBrowserSession(session, new Error("Mirasim browser sign-in code request failed"));
+      return browserHtml(locale, copy.unavailableTitle, `<p>${escapeHtml(copy.unavailableBody)}</p>`, 502);
     }
   }
 
@@ -811,6 +820,11 @@ export async function handleMirasimBrowserOAuthRequest(
       if (error instanceof Error && error.message.includes("no renewable credential")) {
         rejectMirasimBrowserSession(session, error);
         return browserHtml(locale, copy.failedTitle, `<p>${escapeHtml(copy.failedBody)}</p>`, 502);
+      }
+      session.verifyAttempts += 1;
+      if (session.verifyAttempts >= MIRASIM_BROWSER_MAX_VERIFY_ATTEMPTS) {
+        rejectMirasimBrowserSession(session, new Error("Mirasim browser sign-in verification attempts exhausted"));
+        return browserHtml(locale, copy.failedTitle, `<p>${escapeHtml(copy.failedBody)}</p>`, 400);
       }
       return renderMirasimCodeEntry(session, copy.failedBody, 400);
     }
