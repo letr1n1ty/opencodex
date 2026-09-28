@@ -1712,10 +1712,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
         models: live.models.length,
         message: `Connected. ${live.models.length} models.`,
       });
-    }
-    if (prov.adapter === "mirasim") {
-      return probeMirasimProviderLiveCatalog(name, prov, apiKey ?? "");
-    }
+    } else if (prov.adapter === "mirasim") return probeMirasimProviderLiveCatalog(name, prov, apiKey ?? "");
     const project = prov.project ?? snapshot?.projectId;
     if (antigravity && !project) {
       return jsonResponse({ ok: false, latencyMs: 0, error: "Antigravity project unavailable — re-run `ocx login google-antigravity`" });
