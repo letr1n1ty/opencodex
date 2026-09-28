@@ -350,8 +350,7 @@ async function readExplicitAccountQuota(provider: string, accountId: string, con
   if (!credential || credential.access !== accessToken) return null;
   // Pair the post-renewal credential with the destination captured before renewal.
   const identity = explicitQuotaIdentity(provider, accountId, config);
-  const isCurrent = () => epoch === explicitAccountEpoch
-    && identity === explicitQuotaIdentity(provider, accountId, configured);
+  const isCurrent = () => epoch === explicitAccountEpoch && identity === explicitQuotaIdentity(provider, accountId, configured);
   if (!isCurrent()) return null;
   let result: ProviderQuotaProbeResult;
   switch (provider) {
