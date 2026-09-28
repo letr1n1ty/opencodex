@@ -416,6 +416,131 @@ describe("Mirasim OAuth/email login", () => {
     expect(await expired!.text()).toContain("invalid or has expired");
   });
 
+  test("management browser verification reserves the five-attempt budget before concurrent upstream calls", async () => {
+    let verifyCalls = 0;
+    let releaseVerify!: () => void;
+    const verifyGate = new Promise<void>(resolve => { releaseVerify = resolve; });
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      if (path === "/auth/code") return new Response(null, { status: 200 });
+      if (path === "/auth/verify") {
+        verifyCalls += 1;
+        await verifyGate;
+        return new Response(null, { status: 400 });
+      }
+      throw new Error(`unexpected Mirasim auth path: ${path}`);
+    }) as typeof fetch;
+
+    let authUrl = "";
+    const login = loginMirasim({
+      onAuth: info => { authUrl = info.url; },
+    }, {
+      browserBaseUrl: "http://127.0.0.1:10100",
+    });
+    await Promise.resolve();
+
+    const send = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=send&email=user%40example.com",
+    }));
+    expect(send?.status).toBe(200);
+
+    let locallySettled = 0;
+    const attempts = Array.from({ length: 8 }, (_, index) =>
+      handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `action=verify&code=${200000 + index}`,
+      })).finally(() => { locallySettled += 1; }),
+    );
+
+    for (let spin = 0; spin < 1_000 && verifyCalls + locallySettled < attempts.length; spin += 1) {
+      await Bun.sleep(1);
+    }
+    const callsBeforeRelease = verifyCalls;
+    releaseVerify();
+
+    const responses = await Promise.all(attempts);
+    expect(responses.every(response => response?.status === 400)).toBe(true);
+    await expect(login).rejects.toThrow("verification attempts exhausted");
+    expect(callsBeforeRelease).toBe(5);
+    expect(verifyCalls).toBe(5);
+
+    const expired = await handleMirasimBrowserOAuthRequest(new Request(authUrl));
+    expect(expired?.status).toBe(400);
+    expect(await expired!.text()).toContain("invalid or has expired");
+  });
+
+  test("management browser verification waits for a reserved late success before exhausting the session", async () => {
+    let verifyCalls = 0;
+    let releaseFailures!: () => void;
+    let releaseSuccess!: () => void;
+    const failureGate = new Promise<void>(resolve => { releaseFailures = resolve; });
+    const successGate = new Promise<void>(resolve => { releaseSuccess = resolve; });
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      if (path === "/auth/code") return new Response(null, { status: 200 });
+      if (path === "/auth/verify") {
+        verifyCalls += 1;
+        const payload = JSON.parse(String(init?.body ?? "{}")) as { code?: string };
+        if (payload.code === "300004") {
+          await successGate;
+          return Response.json({
+            access_token: "late-success-access",
+            refresh_token: "late-success-refresh",
+            expires_in: 1800,
+          });
+        }
+        await failureGate;
+        return new Response(null, { status: 400 });
+      }
+      if (path === "/auth/me") {
+        return Response.json({ email: "user@example.com" });
+      }
+      throw new Error(`unexpected Mirasim auth path: ${path}`);
+    }) as typeof fetch;
+
+    let authUrl = "";
+    let loginSettled = false;
+    const login = loginMirasim({
+      onAuth: info => { authUrl = info.url; },
+    }, {
+      browserBaseUrl: "http://127.0.0.1:10100",
+    }).finally(() => { loginSettled = true; });
+    await Promise.resolve();
+
+    await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=send&email=user%40example.com",
+    }));
+
+    const attempts = Array.from({ length: 5 }, (_, index) =>
+      handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `action=verify&code=${300000 + index}`,
+      })),
+    );
+    for (let spin = 0; spin < 1_000 && verifyCalls < attempts.length; spin += 1) {
+      await Bun.sleep(1);
+    }
+    expect(verifyCalls).toBe(5);
+
+    releaseFailures();
+    const failed = await Promise.all(attempts.slice(0, 4));
+    expect(failed.every(response => response?.status === 400)).toBe(true);
+    await Promise.resolve();
+    expect(loginSettled).toBe(false);
+
+    releaseSuccess();
+    expect((await attempts[4])?.status).toBe(200);
+    const credential = await login;
+    expect(credential.access).toBe("late-success-access");
+    expect(credential.refresh).toBe("late-success-refresh");
+  });
+
   test("management browser verification refuses a non-renewable auth response without exposing it", async () => {
     const calls: AuthCall[] = [];
     installEmailAuthServer(calls, { access_token: "short-lived-only" });
