@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createMirasimDeviceIdentity } from "../adapters/mirasim/crypto";
 import { readBoundedResponseBytes } from "../lib/bounded-body";
+import type { OcxProviderConfig } from "../types";
 import type { MirasimOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
 
 export const MIRASIM_RELAY_URL = "https://relay.mirasim.ai";
@@ -831,6 +832,36 @@ export async function handleMirasimBrowserOAuthRequest(
   }
 
   return renderMirasimEmailEntry(session, copy.failedBody, 400);
+}
+
+export interface MirasimProviderLoginOptions {
+  mirasimBrowserBaseUrl?: string;
+  mirasimBrowserLocale?: string;
+  mirasimEmail?: string;
+  mirasimCode?: string;
+}
+
+export function loginMirasimForProvider(
+  ctrl: OAuthController,
+  opts?: MirasimProviderLoginOptions,
+): Promise<OAuthCredentials> {
+  return loginMirasim(ctrl, {
+    ...(opts?.mirasimBrowserBaseUrl ? { browserBaseUrl: opts.mirasimBrowserBaseUrl } : {}),
+    ...(opts?.mirasimBrowserLocale ? { browserLocale: opts.mirasimBrowserLocale } : {}),
+    ...(opts?.mirasimEmail ? { email: opts.mirasimEmail } : {}),
+    ...(opts?.mirasimCode ? { code: opts.mirasimCode } : {}),
+  });
+}
+
+export function mirasimOAuthProviderConfig(
+  base: OcxProviderConfig,
+  relayUrl?: string,
+): OcxProviderConfig {
+  return {
+    ...base,
+    ...(relayUrl ? { baseUrl: relayUrl } : {}),
+    upstreamHttpVersion: "http1.1",
+  };
 }
 
 export async function loginMirasim(

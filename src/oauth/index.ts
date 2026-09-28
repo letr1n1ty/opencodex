@@ -48,10 +48,7 @@ import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUr
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
 import {
-  loginMirasim,
-  MirasimTokenRefreshError,
-  mirasimRelayUrl,
-  refreshMirasimToken,
+  loginMirasimForProvider, mirasimOAuthProviderConfig, MirasimTokenRefreshError, mirasimRelayUrl, refreshMirasimToken,
 } from "./mirasim";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
@@ -252,26 +249,11 @@ function oauthDefaultModel(id: string): string {
 
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
   mirasim: {
-    login: (ctrl, opts) => loginMirasim(ctrl, {
-      ...(opts?.mirasimBrowserBaseUrl ? { browserBaseUrl: opts.mirasimBrowserBaseUrl } : {}),
-      ...(opts?.mirasimBrowserLocale ? { browserLocale: opts.mirasimBrowserLocale } : {}),
-      ...(opts?.mirasimEmail ? { email: opts.mirasimEmail } : {}),
-      ...(opts?.mirasimCode ? { code: opts.mirasimCode } : {}),
-    }),
-    refresh: (refreshToken, signal, credential) =>
-      refreshMirasimToken(refreshToken, signal, credential),
-    providerConfig: {
-      ...oauthConfig("mirasim"),
-      upstreamHttpVersion: "http1.1",
-    },
-    resolveProviderConfig: () => ({
-      ...oauthConfig("mirasim"),
-      baseUrl: mirasimRelayUrl(),
-      upstreamHttpVersion: "http1.1",
-    }),
+    login: loginMirasimForProvider,
+    refresh: refreshMirasimToken,
+    providerConfig: mirasimOAuthProviderConfig(oauthConfig("mirasim")),
+    resolveProviderConfig: () => mirasimOAuthProviderConfig(oauthConfig("mirasim"), mirasimRelayUrl()),
     defaultModel: oauthDefaultModel("mirasim"),
-    // Mirasim refresh tokens are used only when a request needs a fresh bearer. Avoid creating
-    // unattended auth traffic on behalf of a relay account.
     defaultRefreshPolicy: "lazy-only",
   },
   "command-code": {
