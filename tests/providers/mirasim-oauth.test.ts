@@ -55,26 +55,6 @@ function installEmailAuthServer(
   }) as typeof fetch;
 }
 
-function installBrowserAuthServer(calls: AuthCall[]): void {
-  globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
-    const url = input instanceof Request ? input.url : input.toString();
-    const path = new URL(url).pathname;
-    calls.push({ path });
-    if (path === "/auth/oauth/providers") {
-      return new Response(JSON.stringify({ providers: ["github", "google"] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    if (path === "/auth/me") {
-      return new Response(JSON.stringify({ email: "browser@example.com" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    throw new Error(`unexpected Mirasim auth path: ${path}`);
-  }) as typeof fetch;
-}
 
 describe("Mirasim OAuth/email login", () => {
   test("rejects control characters in the runtime protocol version", () => {
@@ -187,48 +167,45 @@ describe("Mirasim OAuth/email login", () => {
     }
   });
 
-  test("malformed management callback paths terminate inside the OAuth namespace", async () => {
+  test("legacy management token-callback paths are no longer owned", async () => {
     const response = await handleMirasimBrowserOAuthRequest(new Request(
-      "http://127.0.0.1:10100/oauth/mirasim/callback/abc?lang=zh-TW",
+      "http://127.0.0.1:10100/oauth/mirasim/callback/abc?access_token=must-not-arrive&refresh_token=must-not-arrive",
     ));
-    expect(response?.status).toBe(400);
-    expect(await response!.text()).toContain("Mirasim 登入連結已過期");
+    expect(response).toBeNull();
   });
 
-  test("CLI loopback callback redirects away from credential-bearing query before completing", async () => {
+  test("default CLI login uses email verification without creating a browser callback", async () => {
     const calls: AuthCall[] = [];
-    installBrowserAuthServer(calls);
+    installEmailAuthServer(calls);
+    const prompts: string[] = [];
+    const answers = ["cli@example.com", "123456"];
     let authUrl = "";
-    const login = loginMirasim({
+
+    const credential = await loginMirasim({
       onAuth: info => { authUrl = info.url; },
+      onManualCodeInput: async (_state, prompt) => {
+        prompts.push(prompt ?? "");
+        return answers.shift() ?? "";
+      },
     });
-    for (let i = 0; i < 100 && !authUrl; i++) await Bun.sleep(1);
-    expect(authUrl).toBeTruthy();
 
-    const upstream = new URL(authUrl);
-    const redirectUri = upstream.searchParams.get("redirect_uri");
-    expect(redirectUri).toBeTruthy();
-    const callback = new URL(redirectUri!);
-    callback.searchParams.set("access_token", "cli-browser-access");
-    callback.searchParams.set("refresh_token", "cli-browser-refresh");
-
-    const first = await originalFetch(callback, { redirect: "manual" });
-    expect(first.status).toBe(303);
-    const clean = first.headers.get("location");
-    expect(clean).toBeTruthy();
-    expect(clean).not.toContain("access_token");
-    expect(clean).not.toContain("refresh_token");
-
-    const completion = await originalFetch(new URL(clean!, callback), { redirect: "manual" });
-    expect(completion.status).toBe(200);
-    const credential = await login;
-    expect(credential.access).toBe("cli-browser-access");
-    expect(credential.refresh).toBe("cli-browser-refresh");
+    expect(authUrl).toBe("");
+    expect(prompts).toEqual([
+      "Enter the Mirasim account email: ",
+      "Enter the Mirasim sign-in code: ",
+    ]);
+    expect(calls.map(call => call.path)).toEqual(["/auth/code", "/auth/verify", "/auth/me"]);
+    expect(credential.access).toBeTruthy();
+    expect(credential.refresh).toBeTruthy();
   });
 
-  test("management browser flow starts on a local provider chooser instead of silently preferring GitHub", async () => {
+  test("management browser flow exchanges an emailed code server-side without credentials in the URL", async () => {
     const calls: AuthCall[] = [];
-    installBrowserAuthServer(calls);
+    installEmailAuthServer(calls, {
+      access_token: "browser-access",
+      refresh_token: "browser-refresh",
+      expires_in: 1800,
+    });
     let authUrl = "";
     const login = loginMirasim({
       onAuth: info => { authUrl = info.url; },
@@ -237,84 +214,85 @@ describe("Mirasim OAuth/email login", () => {
     });
     await Promise.resolve();
 
-    expect(new URL(authUrl).origin).toBe("http://127.0.0.1:10100");
-    expect(new URL(authUrl).pathname).toBe("/oauth/mirasim/start");
-    expect(new URL(authUrl).searchParams.get("lang")).toBe("en");
-    expect(authUrl).not.toContain("/auth/oauth/github/login");
-
-    const chooser = await handleMirasimBrowserOAuthRequest(new Request(authUrl));
-    expect(chooser?.status).toBe(200);
-    const chooserHtml = await chooser!.text();
-    expect(chooserHtml).toContain("/provider-icons/mirasim.svg");
-    expect(chooserHtml).toContain("Continue with GitHub");
-    expect(chooserHtml).toContain("Continue with Google");
-
     const start = new URL(authUrl);
-    const state = start.searchParams.get("state");
-    expect(state).toBeTruthy();
-    start.searchParams.set("provider", "google");
-    const redirect = await handleMirasimBrowserOAuthRequest(new Request(start));
-    expect(redirect?.status).toBe(302);
-    const upstream = new URL(redirect!.headers.get("location")!);
-    expect(upstream.origin).toBe("https://auth.mirasim.ai");
-    expect(upstream.pathname).toBe("/auth/oauth/google/login");
-    const redirectUri = new URL(upstream.searchParams.get("redirect_uri")!);
-    expect(redirectUri.origin).toBe("http://127.0.0.1:10100");
-    expect(redirectUri.pathname).toMatch(/^\/oauth\/mirasim\/callback\/[A-Za-z0-9_-]{20,}$/);
-    expect(upstream.searchParams.get("state")).toBe(state);
+    expect(start.origin).toBe("http://127.0.0.1:10100");
+    expect(start.pathname).toBe("/oauth/mirasim/start");
+    expect(start.searchParams.get("lang")).toBe("en");
+    expect(authUrl).not.toContain("access_token");
+    expect(authUrl).not.toContain("refresh_token");
+    expect(authUrl).not.toContain("/auth/oauth/");
 
-    // Current Mirasim production omits the separately supplied state on the token callback.
-    // The unguessable one-use callback path is therefore the channel binding, matching the
-    // upstream CLI implementation.
-    const callback = new URL(redirectUri);
-    callback.searchParams.set("access_token", "browser-access");
-    callback.searchParams.set("refresh_token", "browser-refresh");
-    const callbackResponse = await handleMirasimBrowserOAuthRequest(new Request(callback));
-    expect(callbackResponse?.status).toBe(303);
-    const clean = callbackResponse!.headers.get("location");
-    expect(clean).not.toContain("access_token");
-    expect(clean).not.toContain("refresh_token");
+    const entry = await handleMirasimBrowserOAuthRequest(new Request(authUrl));
+    expect(entry?.status).toBe(200);
+    const entryHtml = await entry!.text();
+    expect(entryHtml).toContain("/provider-icons/mirasim.svg");
+    expect(entryHtml).toContain("Send verification code");
+    expect(entryHtml).not.toContain("access_token");
+    expect(entryHtml).not.toContain("refresh_token");
 
-    const completion = await handleMirasimBrowserOAuthRequest(new Request(clean!));
-    expect(completion?.status).toBe(200);
+    const send = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=send&email=browser%40example.com",
+    }));
+    expect(send?.status).toBe(200);
+    expect(await send!.text()).toContain("Verification code");
+
+    const verify = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=verify&code=123456",
+    }));
+    expect(verify?.status).toBe(200);
+    const verifyHtml = await verify!.text();
+    expect(verifyHtml).toContain("Mirasim sign-in complete");
+    expect(verifyHtml).not.toContain("browser-access");
+    expect(verifyHtml).not.toContain("browser-refresh");
+
     const credential = await login;
     expect(credential.access).toBe("browser-access");
     expect(credential.refresh).toBe("browser-refresh");
-    expect(credential.email).toBe("browser@example.com");
-    expect(calls.map(call => call.path)).toEqual([
-      "/auth/oauth/providers",
-      "/auth/oauth/providers",
-      "/auth/me",
+    expect(credential.email).toBe("user@example.com");
+    expect(calls).toEqual([
+      { path: "/auth/code", body: { email: "browser@example.com" } },
+      { path: "/auth/verify", body: { email: "browser@example.com", code: "123456" } },
+      { path: "/auth/me" },
     ]);
+
+    const replay = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=verify&code=123456",
+    }));
+    expect(replay?.status).toBe(400);
+    expect(await replay!.text()).toContain("invalid or has expired");
   });
 
   test("management browser flow follows English, Traditional Chinese, and Simplified Chinese locale", async () => {
-    const calls: AuthCall[] = [];
-    installBrowserAuthServer(calls);
     const cases = [
       {
         locale: "en",
         htmlLang: "en",
         title: "Sign in to Mirasim",
-        chooser: "Choose the account provider you want to use.",
-        button: "Continue with GitHub",
-        instruction: "Choose GitHub or Google on the Mirasim sign-in page.",
+        chooser: "Enter the email address for your Mirasim account.",
+        button: "Send verification code",
+        instruction: "Complete Mirasim sign-in in the browser using the emailed verification code.",
       },
       {
         locale: "zh-TW",
         htmlLang: "zh-TW",
         title: "登入 Mirasim",
-        chooser: "選擇要用於登入的帳號供應商。",
-        button: "使用 GitHub 繼續",
-        instruction: "請在 Mirasim 登入頁面選擇 GitHub 或 Google。",
+        chooser: "輸入 Mirasim 帳號的電子郵件地址",
+        button: "傳送驗證碼",
+        instruction: "請在瀏覽器中使用電子郵件驗證碼完成 Mirasim 登入。",
       },
       {
         locale: "zh",
         htmlLang: "zh-CN",
         title: "登录 Mirasim",
-        chooser: "选择用于登录的账户提供商。",
-        button: "使用 GitHub 继续",
-        instruction: "请在 Mirasim 登录页面选择 GitHub 或 Google。",
+        chooser: "输入 Mirasim 账户的电子邮件地址",
+        button: "发送验证码",
+        instruction: "请在浏览器中使用电子邮件验证码完成 Mirasim 登录。",
       },
     ] as const;
 
@@ -336,13 +314,15 @@ describe("Mirasim OAuth/email login", () => {
 
       expect(new URL(authUrl).searchParams.get("lang")).toBe(item.htmlLang);
       expect(instruction).toBe(item.instruction);
-      const chooser = await handleMirasimBrowserOAuthRequest(new Request(authUrl));
-      expect(chooser?.status).toBe(200);
-      const html = await chooser!.text();
+      const page = await handleMirasimBrowserOAuthRequest(new Request(authUrl));
+      expect(page?.status).toBe(200);
+      const html = await page!.text();
       expect(html).toContain(`<html lang="${item.htmlLang}"`);
       expect(html).toContain(item.title);
       expect(html).toContain(item.chooser);
       expect(html).toContain(item.button);
+      expect(html).not.toContain("access_token");
+      expect(html).not.toContain("refresh_token");
 
       abort.abort();
       await expect(login).rejects.toThrow("cancelled");
@@ -370,8 +350,6 @@ describe("Mirasim OAuth/email login", () => {
   });
 
   test("cancelled management browser flow invalidates its start capability", async () => {
-    const calls: AuthCall[] = [];
-    installBrowserAuthServer(calls);
     const abort = new AbortController();
     let authUrl = "";
     const login = loginMirasim({
@@ -389,9 +367,9 @@ describe("Mirasim OAuth/email login", () => {
     expect(await expired!.text()).toContain("invalid or has expired");
   });
 
-  test("random callback path accepts omitted state but rejects a present mismatched state", async () => {
+  test("management browser verification refuses a non-renewable auth response without exposing it", async () => {
     const calls: AuthCall[] = [];
-    installBrowserAuthServer(calls);
+    installEmailAuthServer(calls, { access_token: "short-lived-only" });
     let authUrl = "";
     const login = loginMirasim({
       onAuth: info => { authUrl = info.url; },
@@ -400,18 +378,20 @@ describe("Mirasim OAuth/email login", () => {
     });
     await Promise.resolve();
 
-    const start = new URL(authUrl);
-    start.searchParams.set("provider", "github");
-    const redirect = await handleMirasimBrowserOAuthRequest(new Request(start));
-    const upstream = new URL(redirect!.headers.get("location")!);
-    const callback = new URL(upstream.searchParams.get("redirect_uri")!);
-    callback.searchParams.set("state", "wrong-state");
-    callback.searchParams.set("access_token", "must-not-save");
-    callback.searchParams.set("refresh_token", "must-not-save");
-
-    const denied = await handleMirasimBrowserOAuthRequest(new Request(callback));
-    expect(denied?.status).toBe(400);
-    expect(await denied!.text()).toContain("did not match this OpenCodex login attempt");
-    await expect(login).rejects.toThrow("state mismatch");
+    await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=send&email=user%40example.com",
+    }));
+    const denied = await handleMirasimBrowserOAuthRequest(new Request(authUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "action=verify&code=123456",
+    }));
+    expect(denied?.status).toBe(502);
+    const html = await denied!.text();
+    expect(html).not.toContain("short-lived-only");
+    await expect(login).rejects.toThrow("no renewable credential");
   });
+
 });
