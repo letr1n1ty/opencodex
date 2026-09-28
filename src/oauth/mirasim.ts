@@ -483,6 +483,7 @@ interface MirasimBrowserSession {
   email?: string;
   codeSent: boolean;
   verifyAttempts: number;
+  verifyInFlight: number;
   completed: boolean;
   promise: Promise<CallbackTokens>;
   resolve: (tokens: CallbackTokens) => void;
@@ -552,6 +553,7 @@ function createMirasimBrowserSession(
     expiresAt: Date.now() + LOGIN_TIMEOUT_MS,
     codeSent: false,
     verifyAttempts: 0,
+    verifyInFlight: 0,
     completed: false,
     promise,
     resolve: resolveTokens,
@@ -589,6 +591,19 @@ function currentMirasimBrowserSession(state: string): MirasimBrowserSession | un
   deleteMirasimBrowserSession(state);
   session.reject(new Error("Mirasim OAuth login timed out"));
   return undefined;
+}
+
+function reserveMirasimBrowserVerifyAttempt(session: MirasimBrowserSession): boolean {
+  if (mirasimBrowserSessions.get(session.state) !== session || session.completed) return false;
+  if (session.verifyAttempts >= MIRASIM_BROWSER_MAX_VERIFY_ATTEMPTS) return false;
+  session.verifyAttempts += 1;
+  session.verifyInFlight += 1;
+  return true;
+}
+
+function finishMirasimBrowserVerifyAttempt(session: MirasimBrowserSession): boolean {
+  session.verifyInFlight = Math.max(0, session.verifyInFlight - 1);
+  return mirasimBrowserSessions.get(session.state) === session && !session.completed;
 }
 
 function oauthBrowserHeaders(contentType?: string): Headers {
@@ -792,6 +807,12 @@ export async function handleMirasimBrowserOAuthRequest(
     } catch {
       return renderMirasimCodeEntry(session, copy.failedBody, 400);
     }
+    if (!reserveMirasimBrowserVerifyAttempt(session)) {
+      const active = mirasimBrowserSessions.get(session.state) === session && !session.completed;
+      return active
+        ? renderMirasimCodeEntry(session, copy.failedBody, 400)
+        : browserHtml(locale, copy.expiredTitle, `<p>${escapeHtml(copy.expiredBody)}</p>`, 400);
+    }
     try {
       const response = await postMirasimAuthJson(
         session.adminUrl,
@@ -814,18 +835,26 @@ export async function handleMirasimBrowserOAuthRequest(
       };
       accessToken = "";
       refreshToken = "";
+      finishMirasimBrowserVerifyAttempt(session);
       settleMirasimBrowserSession(session, tokens);
       return browserHtml(locale, copy.completeTitle, `<p>${escapeHtml(copy.completeBody)}</p>`);
     } catch (error) {
       code = "";
+      const active = finishMirasimBrowserVerifyAttempt(session);
       if (error instanceof Error && error.message.includes("no renewable credential")) {
-        rejectMirasimBrowserSession(session, error);
+        if (active) rejectMirasimBrowserSession(session, error);
         return browserHtml(locale, copy.failedTitle, `<p>${escapeHtml(copy.failedBody)}</p>`, 502);
       }
-      session.verifyAttempts += 1;
-      if (session.verifyAttempts >= MIRASIM_BROWSER_MAX_VERIFY_ATTEMPTS) {
+      if (
+        active
+        && session.verifyAttempts >= MIRASIM_BROWSER_MAX_VERIFY_ATTEMPTS
+        && session.verifyInFlight === 0
+      ) {
         rejectMirasimBrowserSession(session, new Error("Mirasim browser sign-in verification attempts exhausted"));
         return browserHtml(locale, copy.failedTitle, `<p>${escapeHtml(copy.failedBody)}</p>`, 400);
+      }
+      if (!active) {
+        return browserHtml(locale, copy.expiredTitle, `<p>${escapeHtml(copy.expiredBody)}</p>`, 400);
       }
       return renderMirasimCodeEntry(session, copy.failedBody, 400);
     }
