@@ -205,6 +205,10 @@ export function mirasimAdminUrl(): string {
   );
 }
 
+export function mirasimCredentialNeedsMigration(credential: OAuthCredentials): boolean {
+  return credential.mirasim === undefined;
+}
+
 export function mirasimClientVersion(): string {
   const value = (process.env.MIRASIM_CLIENT_VERSION ?? MIRASIM_CLIENT_VERSION).trim();
   if (!value || value.length > 128 || /[\x00-\x1f\x7f]/.test(value)) {
