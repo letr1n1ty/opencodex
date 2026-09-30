@@ -45,9 +45,7 @@ import { validateDevinApiBaseUrl } from "./devin/api-base";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
-import {
-  loginMirasimForProvider, mirasimOAuthProviderConfig, MirasimTokenRefreshError, mirasimRelayUrl, refreshMirasimToken,
-} from "./mirasim";
+import { loginMirasimForProvider, mirasimCredentialNeedsMigration, mirasimOAuthProviderConfig, MirasimTokenRefreshError, mirasimRelayUrl, refreshMirasimToken } from "./mirasim";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
@@ -618,7 +616,10 @@ async function resolveAccessSnapshotForAccount(
   const cred = row.credential;
   const current = accessSnapshot(provider, accountId, cred, oauthProvider);
   if (rejectedGeneration !== undefined && current.generation !== rejectedGeneration) return current;
-  if (rejectedGeneration === undefined && cred.expires > Date.now() + REFRESH_SKEW_MS) return current;
+  // A fresh legacy Mirasim token is unusable until its device signing metadata is migrated.
+  const requiresCredentialMigration = oauthProvider === "mirasim" && mirasimCredentialNeedsMigration(cred);
+  if (rejectedGeneration === undefined && !requiresCredentialMigration
+    && cred.expires > Date.now() + REFRESH_SKEW_MS) return current;
 
   const key = `${provider}\u0000${accountId}`;
   let existing = tokenRefreshes.get(key);

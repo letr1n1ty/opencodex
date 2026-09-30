@@ -2,6 +2,7 @@ import { parseAnthropicFamilyHeaders, mergeAnthropicFamilyWindows } from "./anth
 import { observeAnthropicFamilyQuota, clearAnthropicRequestedFamilyQuota, ANTHROPIC_PASSIVE_FAMILY_MAX_AGE_MS } from "../../oauth/anthropic-model-quota";
 import { createHash } from "node:crypto";
 import { getValidAccessTokenForAccount } from "../../oauth";
+import { mirasimCredentialNeedsMigration } from "../../oauth/mirasim";
 import { credentialGeneration, getAccountCredential, getAccountCredentialWithStatus, getAccountSet } from "../../oauth/store";
 import type { GenerationContext } from "../../lib/state-store-sweeper";
 import { ACCOUNT_QUOTA_TTL_MS, toFiniteNumber } from "../quota-wire";
@@ -466,7 +467,11 @@ export async function getTokenForAccountQuotaProbe(provider: string, accountId: 
   // An operator-paused account is excluded from every automatic upstream use, quota reads included.
   if (row.paused) throw new Error("account is paused; quota probe skipped");
   const stored = row.credential;
-  if (stored.expires > Date.now() + ACCOUNT_TOKEN_SKEW_MS) return stored.access;
+  // A fresh legacy Mirasim bearer is still unusable by the signed control plane when its
+  // persisted device metadata is missing. Let the OAuth resolver refresh once so it can
+  // migrate the credential instead of returning a token that fetchMirasimControl cannot sign.
+  const requiresCredentialMigration = provider === "mirasim" && mirasimCredentialNeedsMigration(stored);
+  if (!requiresCredentialMigration && stored.expires > Date.now() + ACCOUNT_TOKEN_SKEW_MS) return stored.access;
   const activeId = getAccountSet(provider)?.activeAccountId;
   if (activeId !== accountId && stored.source === "local-cli") {
     throw new Error("background local-cli token expired; skip CLI-adopting refresh for quota probe");

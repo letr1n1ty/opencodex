@@ -11,6 +11,7 @@ import { getValidAccessTokenSnapshot } from "../../src/oauth";
 import { getAccountSet, saveCredential } from "../../src/oauth/store";
 import { providerConfigSeed } from "../../src/providers/derive";
 import { getProviderRegistryEntry } from "../../src/providers/registry";
+import { getTokenForAccountQuotaProbe } from "../../src/providers/quota/account-cache";
 import { handleResponses } from "../../src/server/responses/core";
 import { handleResponsesCompact } from "../../src/server/responses/compact";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
@@ -77,6 +78,35 @@ function mirasimConfig(fakeFetch: typeof fetch): OcxConfig {
 }
 
 describe("Mirasim OAuth recovery", () => {
+  test("fresh legacy credential migrates missing Mirasim device metadata", async () => {
+    const seeded = credential();
+    const legacy = { ...seeded, mirasim: undefined };
+    await saveCredential("mirasim", legacy);
+
+    let refreshCalls = 0;
+    globalThis.fetch = (async () => {
+      refreshCalls += 1;
+      return new Response(JSON.stringify({
+        access_token: "migrated-access",
+        refresh_token: "migrated-refresh",
+        expires_in: 1800,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const accountId = getAccountSet("mirasim")?.accounts[0]?.id;
+    expect(accountId).toBeTruthy();
+    const accessToken = await getTokenForAccountQuotaProbe("mirasim", accountId!);
+    const stored = getAccountSet("mirasim")?.accounts[0]?.credential;
+    expect(accessToken).toBe("migrated-access");
+    expect(refreshCalls).toBe(1);
+    expect(stored?.mirasim?.devicePrivateKey).toBeTruthy();
+    expect(stored?.mirasim?.relayUrl).toBe("https://relay.mirasim.ai");
+    expect(stored?.mirasim?.adminUrl).toBe("https://auth.mirasim.ai");
+  });
+
   test("terminal invalid_grant marks the exact account for reauthentication and is not retried forever", async () => {
     await saveCredential("mirasim", credential({ expires: Date.now() - 1_000 }));
 
