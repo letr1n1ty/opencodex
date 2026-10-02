@@ -897,6 +897,20 @@ export function mirasimOAuthProviderConfig(
   };
 }
 
+export function mirasimOAuthProviderDefinition(
+  resolveBaseConfig: () => OcxProviderConfig,
+  defaultModel: string,
+) {
+  return {
+    login: loginMirasimForProvider,
+    refresh: refreshMirasimToken,
+    providerConfig: mirasimOAuthProviderConfig(resolveBaseConfig()),
+    resolveProviderConfig: () => mirasimOAuthProviderConfig(resolveBaseConfig(), mirasimRelayUrl()),
+    defaultModel,
+    defaultRefreshPolicy: "lazy-only" as const,
+  };
+}
+
 export async function loginMirasim(
   ctrl: OAuthController,
   options: MirasimLoginOptions = {},
