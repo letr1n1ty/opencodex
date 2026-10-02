@@ -541,7 +541,9 @@ export async function deliverPassthroughResponse(
     && isCanonicalOpenAiForwardProvider(route.provider);
   const originalContentType = upstreamResponse.headers.get("content-type");
   if (isUsageDebugEnabled() && originalContentType) logCtx.usageDebugContentType = originalContentType;
-  if (responseEffects.plaintextV2AgentMessageToolNames.size > 0
+  const shouldProbeResponsesSse = responseEffects.plaintextV2AgentMessageToolNames.size > 0
+    || route.provider.adapter === "mirasim";
+  if (shouldProbeResponsesSse
     && upstreamResponse.ok && upstreamResponse.body && (parsed.stream || canonicalBufferedJson)
     && !originalContentType?.toLowerCase().includes("text/event-stream")
     && !originalContentType?.toLowerCase().includes("application/json")
@@ -911,6 +913,7 @@ export async function deliverPassthroughResponse(
             translatorBudget,
             routedCustomToolRepairNames,
             declaredWireToolNames,
+            recoverableBareCustomWireToolNames,
           )
           : undefined,
         routedToolSearchNames.size > 0
@@ -1396,6 +1399,7 @@ export async function deliverPassthroughResponse(
           routedCustomToolNames,
           routedCustomToolRepairNames,
           declaredWireToolNames,
+          recoverableBareCustomWireToolNames,
         );
         const restoredToolSearch = restoreRoutedToolSearchCallsInJson(
           restored,

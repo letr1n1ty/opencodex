@@ -283,6 +283,110 @@ describe("Mirasim auxiliary inference endpoints", () => {
     }
   });
 
+  test("GPT-5.6 Sol recovers direct cua_repl when the relay labels Responses SSE as text/plain", async () => {
+    await saveCredential("mirasim", syntheticCredential());
+    const calls: Captured[] = [];
+    const config = mirasimConfig(captureFetch(calls, call => {
+      if (call.path !== "/v1/responses") return new Response("not found", { status: 404 });
+      const tool = Array.isArray(call.body?.tools)
+        ? call.body.tools[0] as Record<string, unknown> | undefined
+        : undefined;
+      expect(tool).toMatchObject({ type: "custom", name: "exec" });
+      const item = {
+        id: "fc_mirasim_cua_56",
+        type: "function_call",
+        call_id: "call_mirasim_cua_56",
+        name: "mcp__cua_repl__js",
+        arguments: '{"code":"1+1"}',
+        status: "completed",
+      };
+      const added = {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { ...item, arguments: "", status: "in_progress" },
+      };
+      const argumentsDone = {
+        type: "response.function_call_arguments.done",
+        output_index: 0,
+        item_id: item.id,
+        arguments: item.arguments,
+      };
+      const done = { type: "response.output_item.done", output_index: 0, item };
+      const terminal = {
+        type: "response.completed",
+        response: {
+          id: "resp_mirasim_cua_56",
+          object: "response",
+          created_at: 1,
+          status: "completed",
+          model: "gpt-5.6-sol",
+          output: [item],
+          usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+        },
+      };
+      return new Response([
+        `data: ${JSON.stringify(added)}\n\n`,
+        `data: ${JSON.stringify(argumentsDone)}\n\n`,
+        `data: ${JSON.stringify(done)}\n\n`,
+        `data: ${JSON.stringify(terminal)}\n\n`,
+        "data: [DONE]\n\n",
+      ].join(""), {
+        status: 200,
+        // Live Mirasim relay may return Responses SSE bytes under text/plain.
+        // The passthrough must classify the bounded prefix before tool-call rewrites.
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }));
+    const releaseSpendHome = acquireOwnedSpendHome();
+    try {
+      const response = await handleResponses(new Request("http://127.0.0.1/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mirasim/gpt-5.6-sol",
+          stream: true,
+          input: [{
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Use Computer Use." }],
+          }],
+          tools: [
+            {
+              type: "namespace",
+              name: "functions",
+              tools: [{
+                type: "custom",
+                name: "exec",
+                description: "Run JavaScript",
+                format: { type: "grammar", syntax: "lark" },
+              }],
+            },
+            {
+              type: "namespace",
+              name: "mcp__cua_repl",
+              tools: [
+                { type: "function", name: "js", parameters: { type: "object" } },
+                { type: "function", name: "js_reset", parameters: { type: "object" } },
+              ],
+            },
+          ],
+          tool_choice: "auto",
+        }),
+      }), config, { model: "", provider: "" }, { abortSignal: AbortSignal.timeout(5_000) });
+
+      expect(response.status).toBe(200);
+      const sse = await response.text();
+      expect(sse).toContain('"type":"custom_tool_call"');
+      expect(sse).toContain('"name":"exec"');
+      expect(sse).toContain(
+        'const result = await tools.mcp__cua_repl__js({\\\"code\\\":\\\"1+1\\\"});\\ntext(result);',
+      );
+      expect(sse).not.toContain('"type":"function_call","name":"mcp__cua_repl__js"');
+    } finally {
+      releaseSpendHome();
+    }
+  });
+
   test("non-stream GPT caller receives bounded JSON even though Mirasim forces upstream Responses SSE", async () => {
     await saveCredential("mirasim", syntheticCredential());
     const calls: Captured[] = [];
