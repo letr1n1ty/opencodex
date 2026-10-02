@@ -23,6 +23,7 @@ import {
   collectDeclaredWireToolNames,
   collectDeclaredBareWireToolNames,
   collectDeclaredBareCustomWireToolNames,
+  collectDeclaredNamespacedWireToolNames,
   collectDeclaredNamelessClientCallTypes,
   collectProviderExecutedCallTypes,
   undeclaredToolCallName,
@@ -389,11 +390,17 @@ export async function preparePassthroughExchange(
         ) routedCustomToolRepairNames.add(name);
       }
     }
-    // Only grant direct MCP recovery when this delivery actually restores converted custom
-    // calls. Native forward and injection paths have no such rewrite.
+    // Grant direct MCP recovery only for a caller-declared bare custom tool that this delivery
+    // can faithfully expose again. Converted custom tools use routedCustomToolNames; native
+    // custom tools use the representation-repair set.
     const recoverableBareCustomWireToolNames = new Set(
-      [...clientDeclaredBareCustomWireToolNames].filter(name => routedCustomToolNames.has(name)),
+      [...clientDeclaredBareCustomWireToolNames].filter(
+        name => routedCustomToolNames.has(name) || routedCustomToolRepairNames.has(name),
+      ),
     );
+    const nestedMcpThroughExecWireNames = recoverableBareCustomWireToolNames.has(CODE_MODE_EXEC_TOOL_NAME)
+      ? collectDeclaredNamespacedWireToolNames(clientToolAuthorizationBody, "mcp__cua_repl")
+      : new Set<string>();
     for (const name of request.convertedRoutedToolSearchNames ?? []) {
       // The adapter already keeps this set empty when tool_choice forbids the private search.
       // Its wire name may be collision-aliased, so comparing it to the caller-facing name here
@@ -483,13 +490,15 @@ export async function preparePassthroughExchange(
       declaredBareWireToolNames.clear();
       if (replayedInputPrefixLength === 0) {
         for (const name of collectDeclaredWireToolNames(outboundRequestBody)) {
-          declaredWireToolNames.add(name);
+          if (!nestedMcpThroughExecWireNames.has(name)) declaredWireToolNames.add(name);
         }
         for (const name of collectDeclaredBareWireToolNames(outboundRequestBody)) {
           declaredBareWireToolNames.add(name);
         }
       }
-      for (const name of clientDeclaredWireToolNames) declaredWireToolNames.add(name);
+      for (const name of clientDeclaredWireToolNames) {
+        if (!nestedMcpThroughExecWireNames.has(name)) declaredWireToolNames.add(name);
+      }
       for (const name of clientDeclaredBareWireToolNames) declaredBareWireToolNames.add(name);
       declaredNamelessClientCallTypes.clear();
       if (replayedInputPrefixLength === 0) {
@@ -506,6 +515,12 @@ export async function preparePassthroughExchange(
       // current-turn wire snapshot above may authorize a call.
       if (replayedInputPrefixLength === 0) {
         for (const name of toolBridgeMaps.declaredToolNames) {
+          // Code-mode-only nested MCP helpers remain model-visible in the bridge catalog, but
+          // they are not client-dispatchable wire tools. The current caller snapshot above
+          // already classified these names for recovery through bare custom `exec`; adding
+          // them back here would undo that boundary and make normalizeDeclaredToolName preserve
+          // the provider's direct MCP call instead of compiling it into `exec`.
+          if (nestedMcpThroughExecWireNames.has(name)) continue;
           // `buildToolBridgeMaps` also aliases a namespaced tool under its bare name when the
           // caller's `tool_choice` selected it unambiguously, which the bridge needs to route the
           // call back. For `exec` alone that alias would also switch on nested-helper
@@ -620,6 +635,7 @@ export async function preparePassthroughExchange(
         routedCustomToolNames,
         routedCustomToolRepairNames,
         declaredWireToolNames,
+        recoverableBareCustomWireToolNames,
       ).value;
       const normalizedResponse = (functionRepairSchemas.size > 0
         ? JSON.parse(normalizeFunctionCompletionJson(JSON.stringify(restored)))
