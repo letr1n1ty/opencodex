@@ -18,7 +18,11 @@ import {
 type MirasimWire = "anthropic" | "responses";
 
 const RESPONSE_WIRE_HEADER = "x-opencodex-mirasim-response-wire";
-const MIRASIM_GPT6_NATIVE_CUSTOM_TOOLS = new Set(["exec"]);
+const MIRASIM_NATIVE_EXEC_TOOLS = new Set(["exec"]);
+
+function usesNativeMirasimExec(modelId: string): boolean {
+  return /^gpt-6(?:-|$)/i.test(modelId) || /^gpt-5\.6-sol$/i.test(modelId);
+}
 
 function parseMirasimModelSelector(modelId: string): { modelId: string; longContext: boolean } {
   const trimmed = modelId.trim();
@@ -241,13 +245,13 @@ export function createMirasimAdapter(provider: OcxProviderConfig): ProviderAdapt
     upstreamWebsocket: false,
   };
   const responses = createResponsesPassthroughAdapter(responsesProvider);
-  const gpt6Responses = createResponsesPassthroughAdapter(responsesProvider, {
-    routedCustomToolPassthroughNames: MIRASIM_GPT6_NATIVE_CUSTOM_TOOLS,
+  const nativeExecResponses = createResponsesPassthroughAdapter(responsesProvider, {
+    routedCustomToolPassthroughNames: MIRASIM_NATIVE_EXEC_TOOLS,
   });
 
   const parser = (wire: MirasimWire, modelId?: string): ProviderAdapter => {
     if (wire === "anthropic") return anthropic;
-    return modelId && /^gpt-6(?:-|$)/i.test(modelId) ? gpt6Responses : responses;
+    return modelId && usesNativeMirasimExec(modelId) ? nativeExecResponses : responses;
   };
 
   return {
