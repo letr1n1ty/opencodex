@@ -47,7 +47,7 @@ import { validateDevinApiBaseUrl } from "./devin/api-base";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
-import { loginMirasimForProvider, mirasimCredentialNeedsMigration, mirasimOAuthProviderConfig, MirasimTokenRefreshError, mirasimRelayUrl, refreshMirasimToken } from "./mirasim";
+import { mirasimCredentialNeedsMigration, mirasimOAuthProviderDefinition, MirasimTokenRefreshError, type MirasimProviderLoginOptions } from "./mirasim";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
@@ -181,22 +181,10 @@ function verdictKey(p:string,a:string,c:OAuthCredentials){return `${p}\0${a}\0${
 function cached(p:string,a:string,c:OAuthCredentials,now:()=>number){const k=verdictKey(p,a,c),u=permanentRefreshFailures.get(k);if(u===undefined)return false;if(u<=now()){permanentRefreshFailures.delete(k);return false;}return true;}
 export function sweepExpiredXaiPermanentFailureVerdicts(now=Date.now()):number{let removed=0;for(const[key,until]of permanentRefreshFailures){if(until>now)continue;permanentRefreshFailures.delete(key);removed+=1;}return removed;}
 
-export interface LoginOpts {
+export interface LoginOpts extends MirasimProviderLoginOptions {
   forceLogin?: boolean;
   /** When set, persist into this account slot and require matching identity. */
   reauthAccountId?: string;
-  /**
-   * Management-owned browser origin for Mirasim OAuth.
-   * The GUI supplies this so Mirasim can return to the long-lived OpenCodex server
-   * instead of a random ephemeral loopback listener.
-   */
-  mirasimBrowserBaseUrl?: string;
-  /** Dashboard/browser locale forwarded to the Mirasim management-owned OAuth pages. */
-  mirasimBrowserLocale?: string;
-  /** Mirasim CLI-only email-code login. Browser/GUI login leaves these unset. */
-  mirasimEmail?: string;
-  /** Optional already-received Mirasim email verification code. */
-  mirasimCode?: string;
   /**
    * ChatGPT only: `device` selects the deviceauth grant instead of the
    * localhost:1455 callback flow, for hosts with no browser or no loopback
@@ -246,14 +234,7 @@ function oauthDefaultModel(id: string): string {
 }
 
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
-  mirasim: {
-    login: loginMirasimForProvider,
-    refresh: refreshMirasimToken,
-    providerConfig: mirasimOAuthProviderConfig(oauthConfig("mirasim")),
-    resolveProviderConfig: () => mirasimOAuthProviderConfig(oauthConfig("mirasim"), mirasimRelayUrl()),
-    defaultModel: oauthDefaultModel("mirasim"),
-    defaultRefreshPolicy: "lazy-only",
-  },
+  mirasim: mirasimOAuthProviderDefinition(() => oauthConfig("mirasim"), oauthDefaultModel("mirasim")),
   "command-code": {
     // Add-account/reauth must not reimport the current local CLI credential.
     login: (ctrl, opts) => loginCommandCode(ctrl, { importLocal: opts?.forceLogin ? "off" : "fallback" }),
