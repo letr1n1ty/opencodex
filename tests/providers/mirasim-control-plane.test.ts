@@ -19,7 +19,7 @@ import {
 } from "../../src/adapters/mirasim/transport";
 import { fetchProviderModelsWithAuth } from "../../src/codex/catalog/provider-models";
 import type { CapturedProviderGather } from "../../src/codex/catalog/gather-capture";
-import { clearModelCache } from "../../src/codex/model-cache";
+import { clearModelCache, getProviderDiscoveryStatus, isModelsFetchCoolingDown } from "../../src/codex/model-cache";
 import { getAccountSet, saveAccountCredential, saveCredential } from "../../src/oauth/store";
 import type { OcxProviderConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
@@ -129,6 +129,71 @@ describe("Mirasim signed transport", () => {
     expect(result.outcome.state).toBe("degraded");
     expect(result.models.map(model => model.id)).toContain("gpt-5.6-sol");
     expect(fetchCalls).toBe(0);
+  });
+
+  test("honors Retry-After and suppresses repeated model discovery without stale cache", async () => {
+    const credential = syntheticCredential();
+    await saveCredential("mirasim", credential);
+    const calls: CapturedCall[] = [];
+    const fakeFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const call = capture(calls, input, init);
+      const path = new URL(call.url).pathname;
+      if (path === "/v1/device/session") return ticketResponse();
+      if (path === "/v1/models") {
+        return new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "600" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    const provider = {
+      ...providerWithFetch(fakeFetch),
+      liveModels: true,
+      models: ["gpt-5.6-sol"],
+      defaultModel: "gpt-5.6-sol",
+    } as OcxProviderConfig & { fetch: typeof fetch };
+    const captured = {
+      name: "mirasim",
+      provider,
+      discovery: { maxResponseBytes: 1024 * 1024, maxModels: 256 },
+      request: {
+        method: "GET",
+        url: "https://relay.mirasim.ai/v1/models",
+        headersWithoutCredential: {},
+        headersWithCredential: {},
+      },
+      metadataModelIdCaseFold: false,
+      effectiveAlias: null,
+    } as unknown as CapturedProviderGather;
+    const auth = {
+      kind: "observed" as const,
+      resolve: () => ({ apiKey: credential.access, observed: true }),
+    };
+
+    const first = await fetchProviderModelsWithAuth(captured, 1, undefined, auth);
+    expect(first.outcome.state).toBe("degraded");
+    expect(first.models.map(model => model.id)).toContain("gpt-5.6-sol");
+    expect(getProviderDiscoveryStatus("mirasim")).toEqual({
+      status: "failed",
+      reason: "http",
+      httpStatus: 429,
+    });
+    expect(calls.map(call => new URL(call.url).pathname)).toEqual([
+      "/v1/device/session",
+      "/v1/models",
+    ]);
+
+    const authority = mirasimCredentialCacheScope(credential.access);
+    expect(isModelsFetchCoolingDown("mirasim", undefined, Date.now() + 31_000, authority)).toBe(true);
+
+    const second = await fetchProviderModelsWithAuth(captured, 1, undefined, auth);
+    expect(second.outcome.state).toBe("degraded");
+    expect(second.models.map(model => model.id)).toContain("gpt-5.6-sol");
+    expect(calls.map(call => new URL(call.url).pathname)).toEqual([
+      "/v1/device/session",
+      "/v1/models",
+    ]);
   });
 
   test("drops Mirasim scalar metadata containing control characters while keeping PEM multiline-safe", async () => {

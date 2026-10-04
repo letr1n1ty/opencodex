@@ -73,6 +73,7 @@ import {
   comboModelId,
   getCombo,
   listComboIds,
+  parseRetryAfterMs,
   quotaInactiveReason,
   targetKey,
 } from "../../combos";
@@ -426,8 +427,8 @@ export async function fetchProviderModelsWithAuth(
       return observed(withConfiguredRetention(fresh), "authoritative");
     }
     const scopedStale = getStaleCached(name, authorityIdentity);
-    if (isModelsFetchCoolingDown(name, undefined, undefined, authorityIdentity) && scopedStale) {
-      return observed(withConfiguredRetention(scopedStale), "degraded");
+    if (isModelsFetchCoolingDown(name, undefined, undefined, authorityIdentity)) {
+      return observed(withConfiguredRetention(scopedStale ?? configured), "degraded");
     }
 
     const live = await fetchMirasimLiveCatalog(name, prov, apiKey);
@@ -493,7 +494,16 @@ export async function fetchProviderModelsWithAuth(
     }
 
     if (isCurrentCacheGeneration()) {
-      markModelsFetchFailure(name, undefined, authorityIdentity);
+      const failedAt = Date.now();
+      const retryDelayMs = live.retryAfter
+        ? parseRetryAfterMs(live.retryAfter, failedAt, { preserveServerDelay: true })
+        : undefined;
+      markModelsFetchFailure(
+        name,
+        failedAt,
+        authorityIdentity,
+        retryDelayMs === undefined ? undefined : failedAt + retryDelayMs,
+      );
       if (live.reason === "http" && live.status !== undefined) {
         markProviderDiscoveryFailed(name, { reason: "http", httpStatus: live.status });
       } else {
