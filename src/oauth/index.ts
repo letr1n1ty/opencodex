@@ -602,8 +602,7 @@ async function resolveAccessSnapshotForAccount(
   if (rejectedGeneration !== undefined && current.generation !== rejectedGeneration) return current;
   // A fresh legacy Mirasim token is unusable until its device signing metadata is migrated.
   const requiresCredentialMigration = oauthProvider === "mirasim" && mirasimCredentialNeedsMigration(cred);
-  if (rejectedGeneration === undefined && !requiresCredentialMigration
-    && cred.expires > Date.now() + REFRESH_SKEW_MS) return current;
+  if (rejectedGeneration === undefined && !requiresCredentialMigration && cred.expires > Date.now() + REFRESH_SKEW_MS) return current;
 
   const key = `${provider}\u0000${accountId}`;
   let existing = tokenRefreshes.get(key);
