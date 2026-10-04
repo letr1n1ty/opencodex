@@ -48,7 +48,12 @@ export interface MirasimDiscoveredModel {
 
 export type MirasimLiveCatalogResult =
   | { ok: true; models: MirasimDiscoveredModel[]; roster?: MirasimRoster }
-  | { ok: false; reason: "auth" | "http" | "invalid_response" | "transport"; status?: number };
+  | {
+      ok: false;
+      reason: "auth" | "http" | "invalid_response" | "transport";
+      status?: number;
+      retryAfter?: string;
+    };
 
 interface RosterCacheEntry {
   roster?: MirasimRoster;
@@ -307,8 +312,14 @@ export async function fetchMirasimLiveCatalog(
     });
     if (!response.ok) {
       const status = response.status;
+      const retryAfter = response.headers.get("retry-after")?.trim() || undefined;
       try { await response.body?.cancel(); } catch { /* already closed */ }
-      return { ok: false, reason: status === 401 || status === 403 ? "auth" : "http", status };
+      return {
+        ok: false,
+        reason: status === 401 || status === 403 ? "auth" : "http",
+        status,
+        ...(retryAfter ? { retryAfter } : {}),
+      };
     }
     const bounded = await readBoundedDiscoveryJson(response, MODEL_DISCOVERY_MAX_RESPONSE_BYTES);
     if (!bounded.ok) return { ok: false, reason: "invalid_response" };
