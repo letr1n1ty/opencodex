@@ -214,6 +214,45 @@ afterEach(async () => {
 });
 
 for (const kind of ["oauth", "api-key"] as const) {
+  test(`${kind} selection refresh that wins before the first quota load keeps new probe rows pending`, async () => {
+    const firstBase = deferred<Response>();
+    const quota = deferred<Response>();
+    const quotaStarted = deferred<void>();
+    const rows = ["a", "b"].map(id => ({ id, masked: id, active: id === "a", quotaMode: "probe" as const }));
+    let baseReads = 0;
+    respond = async url => {
+      if (url.includes("quota=1")) { quotaStarted.resolve(); return quota.promise; }
+      if (++baseReads === 1) return firstBase.promise;
+      return Response.json({ activeAccountId: "a", activeId: "a", accounts: rows, keys: rows });
+    };
+
+    let full!: Promise<boolean>;
+    await act(async () => {
+      full = kind === "oauth" ? pools.fetchAccountSets(["fixture"], true) : pools.fetchKeyPools(["fixture"], true);
+    });
+    await act(async () => {
+      expect(await pools.refreshAccountRosters({ provider: "fixture", kind })).toBe(true);
+    });
+
+    const current = () => kind === "oauth" ? pools.accountSets.fixture.accounts : pools.keyPools.fixture;
+    expect(current()).toHaveLength(2);
+    expect(current()[0]).toMatchObject({ quotaPending: true, quotaUnavailable: false });
+    expect(current()[0].quota).toBeUndefined();
+
+    await act(async () => {
+      firstBase.resolve(Response.json({ activeAccountId: "a", activeId: "a", accounts: rows, keys: rows }));
+      await quotaStarted.promise;
+    });
+    expect(current()[0]).toMatchObject({ quotaPending: true, quotaUnavailable: false });
+
+    const enriched = rows.map(row => ({ ...row, quota: reading, quotaUnavailable: false }));
+    await act(async () => {
+      quota.resolve(Response.json({ activeAccountId: "a", activeId: "a", accounts: enriched, keys: enriched }));
+      expect(await full).toBe(true);
+    });
+    expect(current()[0]).toMatchObject({ quota: reading, quotaPending: false, quotaUnavailable: false });
+  });
+
   test(`${kind} push refresh overtakes a slow quota probe while late quota cannot change selection or resurrect rows`, async () => {
     const quota = deferred<Response>();
     const started = deferred<void>();
