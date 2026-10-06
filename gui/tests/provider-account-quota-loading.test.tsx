@@ -253,6 +253,47 @@ for (const kind of ["oauth", "api-key"] as const) {
     expect(current()[0]).toMatchObject({ quota: reading, quotaPending: false, quotaUnavailable: false });
   });
 
+  for (const outcome of ["success", "http-error"] as const) {
+    test(`${kind} membership added after quota probe start is not left pending (${outcome})`, async () => {
+      const quota = deferred<Response>();
+      const quotaStarted = deferred<void>();
+      const original = [{ id: "a", masked: "a", active: true, quotaMode: "probe" as const }];
+      const latest = [...original, { id: "new", masked: "new", active: false, quotaMode: "probe" as const }];
+      let baseReads = 0;
+      respond = async url => {
+        if (url.includes("quota=1")) { quotaStarted.resolve(); return quota.promise; }
+        const rows = ++baseReads === 1 ? original : latest;
+        return Response.json({ activeAccountId: "a", activeId: "a", accounts: rows, keys: rows });
+      };
+
+      let full!: Promise<boolean>;
+      await act(async () => {
+        full = kind === "oauth" ? pools.fetchAccountSets(["fixture"], true) : pools.fetchKeyPools(["fixture"], true);
+        await quotaStarted.promise;
+      });
+      await act(async () => {
+        expect(await pools.refreshAccountRosters({ provider: "fixture", kind })).toBe(true);
+      });
+
+      const current = () => kind === "oauth" ? pools.accountSets.fixture.accounts : pools.keyPools.fixture;
+      expect(current().map(row => row.id)).toEqual(["a", "new"]);
+
+      await act(async () => {
+        quota.resolve(outcome === "success"
+          ? Response.json({ activeAccountId: "a", activeId: "a", accounts: [{ ...original[0], quota: reading }], keys: [{ ...original[0], quota: reading }] })
+          : new Response(null, { status: 503 }));
+        expect(await full).toBe(outcome === "success");
+      });
+
+      expect(current()[1]).toMatchObject({ quotaPending: false, quotaUnavailable: false });
+      expect(current()[1].quota).toBeUndefined();
+
+      respond = async () => Response.json({ activeAccountId: "a", activeId: "a", accounts: latest, keys: latest });
+      await act(async () => { expect(await pools.refreshAccountRosters({ provider: "fixture", kind })).toBe(true); });
+      expect(current()[1]).toMatchObject({ quotaPending: false, quotaUnavailable: false });
+    });
+  }
+
   test(`${kind} push refresh overtakes a slow quota probe while late quota cannot change selection or resurrect rows`, async () => {
     const quota = deferred<Response>();
     const started = deferred<void>();
