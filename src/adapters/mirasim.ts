@@ -6,6 +6,7 @@ import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./bas
 import { createResponsesPassthroughAdapter } from "./openai-responses";
 import {
   fetchMirasim,
+  MIRASIM_INTERNAL_AGENT_HEADER,
   MIRASIM_INTERNAL_THREAD_HEADER,
   MIRASIM_INTERNAL_WIRE_HEADER,
 } from "./mirasim/transport";
@@ -283,6 +284,11 @@ export function createMirasimAdapter(provider: OcxProviderConfig): ProviderAdapt
         claudeShape,
       );
       request.headers[MIRASIM_INTERNAL_WIRE_HEADER] = wire;
+      // Relay metadata describes the originating client, not the translated target wire.
+      // A Responses caller targeting Claude serializes onto /v1/messages but remains Codex-originated.
+      if (wire === "anthropic" && parsed._rawBody !== undefined) {
+        request.headers[MIRASIM_INTERNAL_AGENT_HEADER] = "codex";
+      }
       const thread = threadIdentity(parsed);
       if (thread) request.headers[MIRASIM_INTERNAL_THREAD_HEADER] = thread;
       return request;

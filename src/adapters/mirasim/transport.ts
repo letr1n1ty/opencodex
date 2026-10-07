@@ -23,6 +23,7 @@ const TICKET_DEFAULT_TTL_MS = 10 * 60 * 1000;
 const TICKET_404_QUIET_MS = 60 * 1000;
 const TICKET_501_QUIET_MS = 15 * 60 * 1000;
 const MAX_CONTROL_BODY = 64 * 1024;
+const INTERNAL_AGENT_HEADER = "x-opencodex-mirasim-agent";
 const INTERNAL_THREAD_HEADER = "x-opencodex-mirasim-thread";
 const INTERNAL_WIRE_HEADER = "x-opencodex-mirasim-wire";
 const CONTROL_PROVIDER_HEADER_NAMES = new Set(["x-mirasim-probe"]);
@@ -454,12 +455,18 @@ async function mintDeviceTicket(
 
 function cleanBaseHeaders(headers: Readonly<Record<string, string>>): {
   headers: Record<string, string>;
+  agent?: "claude" | "codex";
   threadId?: string;
 } {
   const out: Record<string, string> = {};
+  let agent: "claude" | "codex" | undefined;
   let threadId: string | undefined;
   for (const [name, value] of Object.entries(headers)) {
     const lower = name.toLowerCase();
+    if (lower === INTERNAL_AGENT_HEADER) {
+      if (value === "claude" || value === "codex") agent = value;
+      continue;
+    }
     if (lower === INTERNAL_THREAD_HEADER) {
       threadId = cleanMetadataValue(value);
       continue;
@@ -473,7 +480,7 @@ function cleanBaseHeaders(headers: Readonly<Record<string, string>>): {
     ) continue;
     out[lower] = value;
   }
-  return { headers: out, threadId };
+  return { headers: out, agent, threadId };
 }
 
 function collectEnabled(): boolean {
@@ -497,14 +504,15 @@ function inferenceMetadata(
   credential: StoredMirasimCredential,
   deviceId: string,
   requestPath: string,
+  agent?: "claude" | "codex",
   threadId?: string,
 ): Record<string, string> {
   const { state } = transportStateFor(credential, deviceId);
   const metadata: Record<string, string> = {
     "x-mirasim-session": sessionId(state, credential.accountIdentity, threadId),
-    "x-mirasim-agent": requestPath.startsWith("/v1/responses") || requestPath.startsWith("/v1/alpha/search")
+    "x-mirasim-agent": agent ?? (requestPath.startsWith("/v1/responses") || requestPath.startsWith("/v1/alpha/search")
       ? "codex"
-      : "claude",
+      : "claude"),
     "x-mirasim-call": randomUUID(),
   };
   const account = relaySubAccount(credential.accessToken);
@@ -570,7 +578,7 @@ async function buildPhysicalRequest(
     : await mintDeviceTicket(credential, ctx, send);
   const metadata = controlPlane
     ? undefined
-    : inferenceMetadata(credential, identity.deviceId, path, clean.threadId);
+    : inferenceMetadata(credential, identity.deviceId, path, clean.agent, clean.threadId);
   const signed = signMirasimRequest({
     method: request.method,
     path,
@@ -819,6 +827,7 @@ export async function fetchMirasim(
 
 export const MIRASIM_INTERNAL_WIRE_HEADER = INTERNAL_WIRE_HEADER;
 export const MIRASIM_INTERNAL_THREAD_HEADER = INTERNAL_THREAD_HEADER;
+export const MIRASIM_INTERNAL_AGENT_HEADER = INTERNAL_AGENT_HEADER;
 
 /** Tests only: observe the stable no-thread session identity for a stored credential. */
 export function mirasimSessionIdForTests(accessToken: string): string | undefined {
