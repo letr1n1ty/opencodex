@@ -133,6 +133,35 @@ describe("Mirasim provider", () => {
     expect(request.headers["x-opencodex-mirasim-wire"]).toBe("anthropic");
   });
 
+  test("a Responses caller translated onto Claude wire keeps Codex client provenance", async () => {
+    const request = await adapter().buildRequest({
+      modelId: "claude-haiku-4-5",
+      stream: true,
+      options: {},
+      _rawBody: { model: "mirasim/claude-haiku-4-5", input: "hello" },
+      context: {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      },
+    });
+
+    expect(new URL(request.url).pathname).toBe("/v1/messages");
+    expect(request.headers["x-opencodex-mirasim-agent"]).toBe("codex");
+  });
+
+  test("a native Claude-shaped turn keeps the transport's Claude provenance fallback", async () => {
+    const request = await adapter().buildRequest({
+      modelId: "claude-haiku-4-5",
+      stream: true,
+      options: {},
+      context: {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      },
+    });
+
+    expect(new URL(request.url).pathname).toBe("/v1/messages");
+    expect(request.headers["x-opencodex-mirasim-agent"]).toBeUndefined();
+  });
+
   test("prepends the relay's minimum Claude Agent marker without replacing the caller system prompt", async () => {
     const request = await adapter().buildRequest({
       modelId: "claude-haiku-4-5",
