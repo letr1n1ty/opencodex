@@ -180,7 +180,6 @@ interface GenericRefreshDeps { intentLock?:ReturnType<typeof createOAuthRefreshI
 function verdictKey(p:string,a:string,c:OAuthCredentials){return `${p}\0${a}\0${credentialGeneration(c)}`;}
 function cached(p:string,a:string,c:OAuthCredentials,now:()=>number){const k=verdictKey(p,a,c),u=permanentRefreshFailures.get(k);if(u===undefined)return false;if(u<=now()){permanentRefreshFailures.delete(k);return false;}return true;}
 export function sweepExpiredXaiPermanentFailureVerdicts(now=Date.now()):number{let removed=0;for(const[key,until]of permanentRefreshFailures){if(until>now)continue;permanentRefreshFailures.delete(key);removed+=1;}return removed;}
-
 export interface LoginOpts extends MirasimProviderLoginOptions {
   forceLogin?: boolean;
   /** When set, persist into this account slot and require matching identity. */
@@ -192,7 +191,6 @@ export interface LoginOpts extends MirasimProviderLoginOptions {
    */
   flow?: ChatGPTLoginFlow;
 }
-
 export interface LoginFlowLifecycle {
   flowId?: string;
   /** Runs after background credential/config persistence settles, before status becomes done. */
@@ -232,7 +230,6 @@ function oauthDefaultModel(id: string): string {
   if (!model) throw new Error(`OAuth provider missing default model in registry: ${id}`);
   return model;
 }
-
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
   mirasim: mirasimOAuthProviderDefinition(() => oauthConfig("mirasim"), oauthDefaultModel("mirasim")),
   "command-code": {
@@ -603,7 +600,6 @@ async function resolveAccessSnapshotForAccount(
   // A fresh legacy Mirasim token is unusable until its device signing metadata is migrated.
   const requiresCredentialMigration = oauthProvider === "mirasim" && mirasimCredentialNeedsMigration(cred);
   if (rejectedGeneration === undefined && !requiresCredentialMigration && cred.expires > Date.now() + REFRESH_SKEW_MS) return current;
-
   const key = `${provider}\u0000${accountId}`;
   let existing = tokenRefreshes.get(key);
   let replacedStaleFlight: OAuthRefreshFlightEvidence | undefined;
